@@ -76,3 +76,16 @@ test('closed room ignores new activity; recap lists results', () => {
   assert.equal(s.feed.length, 2);
   assert.match(recap('Bio club', 'ABCDE', s), /Why\?/);
 });
+
+test('join: one line per person, counts people, room still "quiet"', async () => {
+  const { isQuiet } = await import('../src/state.ts');
+  const s = build('host', [
+    m('join', 'a', {}), m('join', 'b', {}), m('join', 'a', {}),
+  ]);
+  assert.equal(s.feed.length, 2);
+  assert.equal(s.people.size, 3); // host + a + b
+  assert.equal(isQuiet(s), true);
+  const s2 = build('host', [m('join', 'a', {}), m('chat', 'a', { text: 'hi' })]);
+  assert.equal(isQuiet(s2), false);
+  assert.match(recap('T', 'ABCDE', s2), /Messages: 1/);
+});

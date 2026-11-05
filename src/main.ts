@@ -3,7 +3,7 @@ import qrcode from 'qrcode-generator';
 import { MockBackend } from './backend/mock.ts';
 import { normalizeCode, type Backend, type RoomInfo, type Status } from './backend/types.ts';
 import {
-  build, apply, rankedQuestions, pollTally, latestOpenPoll, recap, LIMITS,
+  build, apply, rankedQuestions, pollTally, latestOpenPoll, recap, isQuiet, LIMITS,
   type RoomState, type RoomMsg, type Question, type Poll,
 } from './state.ts';
 
@@ -141,7 +141,7 @@ function renderHome(prefill = '', error = '') {
       <li><b>2</b><span><strong>Show the QR</strong> on the board. Everyone joins from their phone in seconds.</span></li>
       <li><b>3</b><span><strong>Everyone gets a voice.</strong> The best questions get voted to the top. Quick polls show what the room thinks.</span></li>
     </ol>
-    <p class="foot">Built on the Nexconn Chat SDK. <span class="mode-pill">${APP_KEY && !forceMock ? 'Live' : 'Offline demo: rooms are shared between tabs of this browser'}</span></p>
+    <p class="foot"><a href="#/r/${FEEDBACK_CODE}">Ideas or problems? Tell us in room ${FEEDBACK_CODE}</a><br/>Built on the Nexconn Chat SDK. <span class="mode-pill">${APP_KEY && !forceMock ? 'Live' : 'Offline demo: rooms are shared between tabs of this browser'}</span></p>
   </main>`;
   const code = $<HTMLInputElement>('#code')!;
   code.oninput = () => { code.value = normalizeCode(code.value); };
@@ -186,6 +186,8 @@ let room: Room | null = null;
 let typingIds: string[] = [];
 const isHost = () => !!room && room.info.ownerId === ME;
 const ROOM_TTL = 24 * 3600 * 1000;
+// The public feedback room never closes.
+const FEEDBACK_CODE = 'FEEDB';
 
 async function openRoom(code: string, screen: boolean) {
   app.innerHTML = `<div class="empty" style="padding-top:30vh"><b>Joining ${esc(code)}…</b></div>`;
@@ -196,9 +198,15 @@ async function openRoom(code: string, screen: boolean) {
     const msgs = await b.history(code);
     room = { info, msgs, state: build(info.ownerId, msgs), tab: 'chat', mode: 'chat', anon: false };
     if (!screen) room.state.people.set(ME, myName);
-    if (Date.now() - info.createdAt > ROOM_TTL) room.state.closed = true;
+    if (Date.now() - info.createdAt > ROOM_TTL && code !== FEEDBACK_CODE) room.state.closed = true;
     document.title = `${info.title} · Roomcode`;
     screen ? renderScreen() : renderRoom();
+    // Say hello once per room, so everyone sees who arrived and the count is live.
+    const seenKey = `roomcode:joined:${code}`;
+    if (!screen && !room.state.closed && !store.get(seenKey)) {
+      store.set(seenKey, '1');
+      sendAndApply('join', {}).catch(() => store.set(seenKey, ''));
+    }
   } catch (err) {
     renderHome(code, (err as Error).message);
   }
@@ -288,7 +296,18 @@ function renderPane(stickToBottom: boolean) {
   let html = '';
   if (room.tab === 'chat') {
     let prev = '';
-    for (const m of s.feed) {
+    const feed = s.feed;
+    for (let i = 0; i < feed.length; i++) {
+      const m = feed[i];
+      if (m.type === 'join') {
+        const names: string[] = [];
+        while (i < feed.length && feed[i].type === 'join') { names.push(feed[i].senderId === ME ? 'You' : feed[i].senderName || 'Guest'); i++; }
+        i--;
+        const shown = names.length > 3 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} others` : names.join(names.length === 2 ? ' and ' : ', ');
+        html += `<div class="sys">${esc(shown)} joined</div>`;
+        prev = '';
+        continue;
+      }
       if (m.type === 'chat') {
         const me = m.senderId === ME, cont = prev === m.senderId;
         const host = m.senderId === s.ownerId ? ' <span class="host">· host</span>' : '';
@@ -300,8 +319,8 @@ function renderPane(stickToBottom: boolean) {
         prev = '';
       }
     }
-    if (!s.feed.length) html = isHost() && !s.closed ? hostGuide(true)
-      : `<div class="empty"><b>The room is quiet.</b>Say hi, or ask the first question.</div>`;
+    if (isQuiet(s)) html = (isHost() && !s.closed ? hostGuide(true)
+      : `<div class="empty"><b>The room is quiet.</b>Say hi, or ask the first question.</div>`) + html;
   } else if (room.tab === 'questions') {
     const qs = rankedQuestions(s);
     html = qs.length ? qs.map((q, i) => questionCard(q, i)).join('')
@@ -312,7 +331,7 @@ function renderPane(stickToBottom: boolean) {
       (polls.length ? polls.map(pollCard).join('') : `<div class="empty"><b>No polls yet.</b>${isHost() ? 'Ask the room a quick question with 2 to 6 answers.' : 'The host can start one.'}</div>`);
   }
   el.innerHTML = html;
-  if (room.tab === 'chat' && s.feed.length && (stickToBottom || nearBottom)) el.scrollTop = el.scrollHeight;
+  if (room.tab === 'chat' && !isQuiet(s) && (stickToBottom || nearBottom)) el.scrollTop = el.scrollHeight;
 }
 
 function renderTyping() {
@@ -324,7 +343,8 @@ function renderTyping() {
 function renderComposer(full: boolean) {
   const el = $('#composer'); if (!el || !room) return;
   if (room.state.closed) {
-    el.innerHTML = `<div class="closed-bar">This room has ended.${isHost() ? ' <button class="link-btn" data-act="recap">Copy recap</button>' : ''}</div>`;
+    el.innerHTML = `<div class="closed-bar"><p>This room has ended.${isHost() ? ' <button class="link-btn" data-act="recap">Copy recap</button>' : ' Thanks for joining.'}</p>
+      <button class="btn accent block" data-act="startown">${isHost() ? 'Start a new room' : 'Run your own room. It takes 10 seconds'}</button></div>`;
     return;
   }
   if (!full && $('#box', el)) return; // keep what the user is typing
@@ -383,6 +403,7 @@ app.addEventListener('click', async e => {
     else if (d.act === 'menu') showMenu();
     else if (d.act === 'newpoll') showNewPoll();
     else if (d.act === 'recap') copyRecap();
+    else if (d.act === 'startown') { location.hash = '#/'; setTimeout(startRoomFlow, 50); }
   } catch (err) { toast((err as Error).message); }
 });
 
@@ -420,7 +441,7 @@ function showShare(code: string) {
 
 function showMenu() {
   const host = isHost(), closed = room!.state.closed;
-  sheet(`<h2>${esc(room!.info.title)}</h2><p class="muted">Room ${esc(room!.info.code)} · ${room!.state.people.size} people · ${room!.state.feed.length} messages</p>
+  sheet(`<h2>${esc(room!.info.title)}</h2><p class="muted">Room ${esc(room!.info.code)} · ${room!.state.people.size} people · ${room!.state.feed.filter(m => m.type !== 'join').length} messages</p>
     <div class="menu-list">
       <button data-m="share">Show QR and code</button>
       ${host ? '<button data-m="guide">How to run a 10-minute session</button>' : ''}

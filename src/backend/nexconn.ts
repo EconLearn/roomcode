@@ -9,11 +9,11 @@ import { codeFromGroupId, groupIdFor, type Backend, type RoomInfo, type Status }
 // Plain chat uses the SDK's built-in text message.
 const TEXT = 'RC:TxtMsg';
 const CUSTOM: Record<Exclude<MsgType, 'chat'>, string> = {
-  question: 'RMC:Q', vote: 'RMC:Vote', answered: 'RMC:Ans', poll: 'RMC:Poll', pollvote: 'RMC:PVote', pin: 'RMC:Pin', close: 'RMC:Close',
+  question: 'RMC:Q', join: 'RMC:Join', vote: 'RMC:Vote', answered: 'RMC:Ans', poll: 'RMC:Poll', pollvote: 'RMC:PVote', pin: 'RMC:Pin', close: 'RMC:Close',
 };
 const TYPE_OF = new Map<string, MsgType>(Object.entries(CUSTOM).map(([k, v]) => [v, k as MsgType]));
 // Votes are persisted (late joiners need them) but do not bump unread counts.
-const QUIET = new Set(['RMC:Vote', 'RMC:PVote']);
+const QUIET = new Set(['RMC:Vote', 'RMC:PVote', 'RMC:Join']);
 // Group channels have no typing API on Web, so typing is a transient status message.
 const TYPING = 'RMC:Typing';
 
@@ -116,7 +116,7 @@ export class NexconnBackend implements Backend {
     const params: SendMessageParams<any> = type === 'chat'
       ? new SendTextMessageParams({ text: String(body.text), senderUserInfo: { userId: this.userId, name: this.name } })
       : new SendMessageParams({ ...body, n: this.name }, CUSTOM[type]);
-    if (type === 'vote' || type === 'pollvote') params.disableNotification = true;
+    if (type === 'vote' || type === 'pollvote' || type === 'join') params.disableNotification = true;
     const r = await channel.sendMessage(params);
     if (!r.isOk || !r.data) throw new Error(`Message not sent (code ${r.code}).`);
     return toRoomMsg(r.data)!;

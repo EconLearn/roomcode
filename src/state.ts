@@ -2,7 +2,7 @@
 // Every action (question, vote, poll, pin, close) is a persisted chat message,
 // so a late joiner rebuilds the exact room by replaying history.
 
-export type MsgType = 'chat' | 'question' | 'vote' | 'answered' | 'poll' | 'pollvote' | 'pin' | 'close';
+export type MsgType = 'chat' | 'question' | 'vote' | 'answered' | 'poll' | 'pollvote' | 'pin' | 'close' | 'join';
 
 export interface RoomMsg {
   id: string;
@@ -55,7 +55,7 @@ const clip = (v: unknown, n: number) => String(v ?? '').trim().slice(0, n);
 // tampered client cannot pin, close, answer or run polls.
 export function apply(s: RoomState, m: RoomMsg): RoomState {
   const isHost = m.senderId === s.ownerId;
-  if (m.senderName && (m.type === 'chat' || m.type === 'question')) s.people.set(m.senderId, m.senderName);
+  if (m.senderName && (m.type === 'chat' || m.type === 'question' || m.type === 'join')) s.people.set(m.senderId, m.senderName);
   else if (!s.people.has(m.senderId)) s.people.set(m.senderId, m.senderName || 'Guest');
   if (s.closed && m.type !== 'close') return s;
   switch (m.type) {
@@ -111,6 +111,12 @@ export function apply(s: RoomState, m: RoomMsg): RoomState {
       }
       break;
     }
+    case 'join': {
+      // One "joined" line per person; repeat joins (new tab, reconnect) are not shown again.
+      if (s.feed.some(f => f.type === 'join' && f.senderId === m.senderId)) return s;
+      s.feed.push(m);
+      break;
+    }
     case 'close': {
       if (isHost) s.closed = true;
       break;
@@ -131,6 +137,9 @@ export function build(ownerId: string, msgs: RoomMsg[]): RoomState {
 }
 
 // Open questions first, then by votes, then oldest first (first asked wins ties).
+// True while nothing but "joined" lines has happened in the room.
+export const isQuiet = (s: RoomState) => s.feed.every(m => m.type === 'join');
+
 export function rankedQuestions(s: RoomState): Question[] {
   return [...s.questions.values()].sort((a, b) =>
     Number(a.answered) - Number(b.answered) || b.voters.size - a.voters.size || a.sentTime - b.sentTime);
@@ -150,7 +159,8 @@ export function latestOpenPoll(s: RoomState): Poll | null {
 
 // Plain-text recap the host can paste into notes, an email or a class page.
 export function recap(title: string, code: string, s: RoomState): string {
-  const lines = [`# ${title} (room ${code})`, '', `People: ${s.people.size} · Messages: ${s.feed.length}`, ''];
+  const msgs = s.feed.filter(m => m.type !== 'join').length;
+  const lines = [`# ${title} (room ${code})`, '', `People: ${s.people.size} · Messages: ${msgs}`, ''];
   const qs = rankedQuestions(s);
   if (qs.length) {
     lines.push('## Questions');

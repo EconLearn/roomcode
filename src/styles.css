@@ -191,7 +191,10 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .send { width: 46px; height: 46px; border-radius: 14px; background: var(--accent); color: #fff; display: grid; place-items: center; flex: none; }
 .send:disabled { opacity: .4; }
 .send svg { width: 20px; height: 20px; }
-.closed-bar { padding: 16px; text-align: center; background: var(--surface); border-top: 1px solid var(--line); color: var(--muted); }
+.closed-bar { padding: 14px 14px calc(14px + env(safe-area-inset-bottom)); text-align: center; background: var(--surface); border-top: 1px solid var(--line); color: var(--muted); }
+.closed-bar p { margin: 0 0 10px; }
+.sys { text-align: center; font-size: 12.5px; color: var(--muted); margin: 10px 0; }
+.foot a { color: inherit; font-weight: 600; }
 
 /* ---------- projector ---------- */
 .screen {
