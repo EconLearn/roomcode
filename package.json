@@ -1,0 +1,24 @@
+{
+  "name": "roomcode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Roomcode: instant QR chat rooms with upvoted questions and live polls, on the Nexconn Chat SDK",
+  "scripts": {
+    "dev": "vite",
+    "api": "node server/dev-api.mjs",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@nexconn/chat": "^26.2.1",
+    "@nexconn/engine": "^26.2.1",
+    "qrcode-generator": "^1.4.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5"
+  }
+}
