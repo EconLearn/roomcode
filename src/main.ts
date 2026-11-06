@@ -49,6 +49,7 @@ async function getBackend(): Promise<Backend> {
   } else backend = new MockBackend();
   backend.onStatus(s => { status = s; renderTop(); });
   backend.onMessage(onIncoming);
+  backend.onSnapshot(onSnapshot);
   backend.onTyping((code, ids) => { if (room && code === room.info.code) { typingIds = ids; renderTyping(); } });
   return backend;
 }
@@ -227,8 +228,43 @@ function onIncoming(code: string, m: RoomMsg) {
   const before = room.state.feed.length;
   apply(room.state, m);
   typingIds = typingIds.filter(id => id !== m.senderId);
+  if (m.type === 'join' && m.senderId !== ME && isHost()) queueSnapshot();
   if ($('.screen')) return renderScreen();
   renderTop(); renderPin(); renderTabs(); renderPane(room.state.feed.length > before && m.senderId !== ME); renderTyping(); renderComposer(false);
+}
+
+// ---------- snapshots for late joiners ----------
+// New group members may not be able to read history from before they joined (a
+// Nexconn console setting). So when someone new joins, the host's open screen (phone
+// or projector) sends the room so far as one transient message.
+const MSG_TYPES = new Set(['chat', 'question', 'vote', 'answered', 'poll', 'pollvote', 'pin', 'close', 'join', 'hide', 'remove']);
+let snapTimer: number | undefined;
+function queueSnapshot() {
+  clearTimeout(snapTimer);
+  snapTimer = window.setTimeout(() => {
+    if (!room || !isHost()) return;
+    const code = room.info.code;
+    // Everything except chat, plus the latest chat, kept under ~60 KB.
+    const keep = room.msgs.filter(m => m.type !== 'chat');
+    const chat = room.msgs.filter(m => m.type === 'chat');
+    let n = Math.min(chat.length, 60), list: RoomMsg[];
+    do { list = [...keep, ...chat.slice(chat.length - n)]; n = Math.floor(n / 2); } while (JSON.stringify(list).length > 60_000 && n > 0);
+    if (JSON.stringify(list).length > 60_000) list = keep.slice(-300);
+    backend.sendSnapshot(code, list);
+  }, 1500);
+}
+
+function onSnapshot(code: string, senderId: string, list: RoomMsg[]) {
+  if (!room || room.info.code !== code || senderId !== room.info.ownerId) return; // only the host's snapshot counts
+  const have = new Set(room.msgs.map(m => m.id));
+  const fresh = list.filter(m => m && typeof m.id === 'string' && !have.has(m.id) && MSG_TYPES.has(m.type) &&
+    typeof m.senderId === 'string' && typeof m.sentTime === 'number' && m.body && typeof m.body === 'object');
+  if (!fresh.length) return;
+  room.msgs.push(...fresh);
+  room.state = build(room.info.ownerId, room.msgs);
+  if (!$('.screen')) room.state.people.set(ME, myName);
+  if (Date.now() - room.info.createdAt > ROOM_TTL && code !== FEEDBACK_CODE) room.state.closed = true;
+  $('.screen') ? renderScreen() : renderRoom();
 }
 
 function renderRoom() {
@@ -481,8 +517,12 @@ const LANGS: [string, string][] = [
 let lang = store.get('roomcode:lang') || '';
 const translated = new Map<string, string>(); // `${lang}:${id}` -> text
 const asked = new Set<string>();
+let trJustPicked = false;
 let trTimer: number | undefined;
-let trBroken = false; // after one failure, stop retrying (and toasting) until the language is changed
+// When the translation service is switched off, hide the feature for a few hours
+// instead of showing errors; it comes back by itself once the service is on.
+const TR_DOWN_MS = 3 * 3600 * 1000;
+const trDown = () => Date.now() - Number(store.get('roomcode:trdown') || 0) < TR_DOWN_MS;
 
 function trLine(id: string) {
   const t = lang && translated.get(`${lang}:${id}`);
@@ -491,7 +531,7 @@ function trLine(id: string) {
 
 // Translates what is on screen and not yet translated: others' posts, newest 40.
 function queueTranslations() {
-  if (!lang || !room || trBroken) return;
+  if (!lang || !room || trDown()) return;
   clearTimeout(trTimer);
   trTimer = window.setTimeout(async () => {
     if (!room) return;
@@ -500,7 +540,8 @@ function queueTranslations() {
       .map(m => ({ id: m.id, text: String(m.type === 'poll' ? m.body.question : m.body.text ?? '').slice(0, 300) }))
       .filter(it => it.text.trim());
     if (!items.length) return;
-    const target = lang;
+    const target = lang, justPicked = trJustPicked;
+    trJustPicked = false;
     items.forEach(it => asked.add(`${target}:${it.id}`));
     try {
       const out = await backend.translate(items, target);
@@ -509,8 +550,10 @@ function queueTranslations() {
       if (out.size && room && !$('.screen')) renderPane(false);
     } catch (err) {
       items.forEach(it => asked.delete(`${target}:${it.id}`));
-      trBroken = true;
-      toast((err as Error).message);
+      if (err instanceof Error && err.name === 'TranslationUnavailable') {
+        store.set('roomcode:trdown', String(Date.now()));
+        if (justPicked) toast('Translation unavailable right now');
+      }
     }
   }, 250);
 }
@@ -522,7 +565,7 @@ function showLanguages() {
     (el, close) => {
       el.addEventListener('click', e => {
         const b = (e.target as HTMLElement).closest<HTMLElement>('[data-l]'); if (!b) return;
-        lang = b.dataset.l!; store.set('roomcode:lang', lang); trBroken = false;
+        lang = b.dataset.l!; store.set('roomcode:lang', lang); trJustPicked = !!lang;
         close(); renderPane(false);
         toast(lang ? `Translating into ${LANGS.find(l => l[0] === lang)![1]}` : 'Translation off');
       });
@@ -551,7 +594,7 @@ function showMenu() {
       <button data-m="screen">Open projector view</button>
       ${host && !closed ? '<button data-m="pin">Pin an announcement</button><button data-m="poll">Start a poll</button>' : ''}
       ${host ? '<button data-m="recap">Copy recap (questions and poll results)</button>' : ''}
-      <button data-m="lang">Translate messages${lang ? ` (${esc(LANGS.find(l => l[0] === lang)?.[1] ?? lang)})` : ''}</button>
+      ${trDown() ? '' : `<button data-m="lang">Translate messages${lang ? ` (${esc(LANGS.find(l => l[0] === lang)?.[1] ?? lang)})` : ''}</button>`}
       <button data-m="name">Change my nickname</button>
       ${host && !closed ? '<button data-m="end" class="danger">End room for everyone</button>' : ''}
     </div>`,

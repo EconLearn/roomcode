@@ -24,7 +24,12 @@ export interface Backend {
   sendTyping(code: string): void;
   // Host only: server-side enforcement on top of the hide/remove messages.
   moderate(code: string, action: 'remove' | 'close', userId?: string): Promise<void>;
+  // Host only: sends the room so far to members who are online now, so a late
+  // joiner who can't read pre-join history still sees questions, votes and polls.
+  sendSnapshot(code: string, msgs: RoomMsg[]): void;
+  onSnapshot(cb: (code: string, senderId: string, msgs: RoomMsg[]) => void): void;
   // Translates texts (keyed by message ID) into `lang`; missing keys failed.
+  // Throws TranslationUnavailable when the service is switched off.
   translate(items: { id: string; text: string }[], lang: string): Promise<Map<string, string>>;
   onMessage(cb: (code: string, msg: RoomMsg) => void): void;
   onTyping(cb: (code: string, userIds: string[]) => void): void;

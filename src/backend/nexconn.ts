@@ -18,6 +18,10 @@ const TYPE_OF = new Map<string, MsgType>(Object.entries(CUSTOM).map(([k, v]) => 
 const QUIET = new Set(['RMC:Vote', 'RMC:PVote', 'RMC:Join', 'RMC:Hide', 'RMC:Remove']);
 // Group channels have no typing API on Web, so typing is a transient status message.
 const TYPING = 'RMC:Typing';
+// The host's snapshot of the room for late joiners: also transient, never stored.
+const SNAP = 'RMC:Snap';
+
+export class TranslationUnavailable extends Error { override name = 'TranslationUnavailable'; }
 
 async function api<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(`/api/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -47,6 +51,7 @@ export class NexconnBackend implements Backend {
   private msgCbs: ((code: string, m: RoomMsg) => void)[] = [];
   private typingCbs: ((code: string, ids: string[]) => void)[] = [];
   private statusCbs: ((s: Status) => void)[] = [];
+  private snapCbs: ((code: string, senderId: string, msgs: RoomMsg[]) => void)[] = [];
   private lastTyping = 0;
 
   constructor(appKey: string, area: string) {
@@ -54,6 +59,7 @@ export class NexconnBackend implements Backend {
     NCEngine.registerCustomMessages([
       ...Object.values(CUSTOM).map(messageType => ({ messageType, isPersisted: true, isCounted: !QUIET.has(messageType) })),
       { messageType: TYPING, isPersisted: false, isCounted: false, isStatusMessage: true },
+      { messageType: SNAP, isPersisted: false, isCounted: false, isStatusMessage: true },
     ]);
     NCEngine.addConnectionStatusHandler('roomcode', new ConnectionStatusHandler({
       onConnectionStatusChanged: ({ status }) => {
@@ -65,6 +71,11 @@ export class NexconnBackend implements Backend {
       onMessageReceived: ({ messages }) => {
         for (const m of messages) {
           if (m.messageType === TYPING) { this.markTyping(codeFromGroupId(m.channelIdentifier.channelId), m.senderUserId); continue; }
+          if (m.messageType === SNAP) {
+            const list = (m.content as Record<string, any>).m;
+            if (Array.isArray(list)) this.snapCbs.forEach(cb => cb(codeFromGroupId(m.channelIdentifier.channelId), m.senderUserId, list));
+            continue;
+          }
           const rm = toRoomMsg(m);
           if (rm) this.msgCbs.forEach(cb => cb(codeFromGroupId(m.channelIdentifier.channelId), rm));
         }
@@ -129,7 +140,7 @@ export class NexconnBackend implements Backend {
       });
       if (!r.isOk) {
         batch.forEach(it => { this.pending.get(it.id)?.(null); this.pending.delete(it.id); });
-        throw new Error(`Translation isn't switched on for this site yet (code ${r.code}).`);
+        throw new TranslationUnavailable(`code ${r.code}`);
       }
       (await Promise.all(waits)).forEach((t, j) => { if (t) out.set(batch[j].id, t); });
     }
@@ -167,6 +178,10 @@ export class NexconnBackend implements Backend {
     void new GroupChannel(groupIdFor(code)).sendMessage(new SendMessageParams({}, TYPING));
   }
 
+  sendSnapshot(code: string, msgs: RoomMsg[]) {
+    void new GroupChannel(groupIdFor(code)).sendMessage(new SendMessageParams({ m: msgs }, SNAP));
+  }
+  onSnapshot(cb: (code: string, senderId: string, msgs: RoomMsg[]) => void) { this.snapCbs.push(cb); }
   onMessage(cb: (code: string, m: RoomMsg) => void) { this.msgCbs.push(cb); }
   onTyping(cb: (code: string, ids: string[]) => void) { this.typingCbs.push(cb); }
   onStatus(cb: (s: Status) => void) { this.statusCbs.push(cb); }
