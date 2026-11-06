@@ -1,6 +1,7 @@
 import {
   NCEngine, AreaCode, LogLevel, GroupChannel, BaseChannel, ConnectionStatus,
-  ConnectionStatusHandler, MessageHandler, SendMessageParams, SendTextMessageParams, type Message,
+  ConnectionStatusHandler, MessageHandler, SendMessageParams, SendTextMessageParams, TranslateHandler,
+  TranslateMessageParam, type Message,
 } from '@nexconn/chat';
 import type { MsgType, RoomMsg } from '../state.ts';
 import { codeFromGroupId, groupIdFor, type Backend, type RoomInfo, type Status } from './types.ts';
@@ -10,10 +11,11 @@ import { codeFromGroupId, groupIdFor, type Backend, type RoomInfo, type Status }
 const TEXT = 'RC:TxtMsg';
 const CUSTOM: Record<Exclude<MsgType, 'chat'>, string> = {
   question: 'RMC:Q', join: 'RMC:Join', vote: 'RMC:Vote', answered: 'RMC:Ans', poll: 'RMC:Poll', pollvote: 'RMC:PVote', pin: 'RMC:Pin', close: 'RMC:Close',
+  hide: 'RMC:Hide', remove: 'RMC:Remove',
 };
 const TYPE_OF = new Map<string, MsgType>(Object.entries(CUSTOM).map(([k, v]) => [v, k as MsgType]));
 // Votes are persisted (late joiners need them) but do not bump unread counts.
-const QUIET = new Set(['RMC:Vote', 'RMC:PVote', 'RMC:Join']);
+const QUIET = new Set(['RMC:Vote', 'RMC:PVote', 'RMC:Join', 'RMC:Hide', 'RMC:Remove']);
 // Group channels have no typing API on Web, so typing is a transient status message.
 const TYPING = 'RMC:Typing';
 
@@ -38,8 +40,10 @@ function toRoomMsg(m: Message): RoomMsg | null {
 export class NexconnBackend implements Backend {
   readonly kind = 'nexconn' as const;
   private userId = '';
+  private device = '';
   private name = '';
   private token = '';
+  private pending = new Map<string, (text: string | null) => void>();
   private msgCbs: ((code: string, m: RoomMsg) => void)[] = [];
   private typingCbs: ((code: string, ids: string[]) => void)[] = [];
   private statusCbs: ((s: Status) => void)[] = [];
@@ -66,6 +70,17 @@ export class NexconnBackend implements Backend {
         }
       },
     }));
+    // Built-in translation: results arrive here, keyed by the message ID we asked about.
+    NCEngine.addTranslateHandler('roomcode', new TranslateHandler({
+      onTranslationCompleted: ({ results }) => {
+        for (const r of results) {
+          const done = this.pending.get(r.identifier);
+          if (!done) continue;
+          this.pending.delete(r.identifier);
+          done(r.code === 0 && r.translateInfo?.translatedText ? r.translateInfo.translatedText : null);
+        }
+      },
+    }));
   }
 
   private typing = new Map<string, Map<string, number>>();
@@ -82,20 +97,44 @@ export class NexconnBackend implements Backend {
     setTimeout(emit, 4100);
   }
 
-  async connect(userId: string, name: string) {
-    this.userId = userId; this.name = name;
-    if (!this.token) this.token = (await api<{ token: string }>('session', { userId, name })).token;
+  async connect(device: string, name: string) {
+    this.device = device; this.name = name;
+    if (!this.token) ({ userId: this.userId, token: this.token } = await api<{ userId: string; token: string }>('session', { device, name }));
     const r = await NCEngine.connect({ token: this.token });
     if (!r.isOk) {
       this.token = ''; // token may have expired; next connect asks for a fresh one
       throw new Error(`Could not connect (code ${r.code}).`);
     }
+    return this.userId;
   }
 
   async disconnect() { await NCEngine.disconnect(); }
 
-  createRoom(title: string) { return api<RoomInfo>('rooms', { userId: this.userId, title }); }
-  joinRoom(code: string) { return api<RoomInfo>('join', { userId: this.userId, code }); }
+  createRoom(title: string) { return api<RoomInfo>('rooms', { device: this.device, title }); }
+  joinRoom(code: string) { return api<RoomInfo>('join', { device: this.device, code }); }
+  async moderate(code: string, action: 'remove' | 'close', userId?: string) {
+    await api('moderate', { device: this.device, code, action, userId });
+  }
+
+  async translate(items: { id: string; text: string }[], lang: string) {
+    const out = new Map<string, string>();
+    for (let i = 0; i < items.length; i += 10) { // the SDK takes up to 10 per request
+      const batch = items.slice(i, i + 10);
+      const waits = batch.map(it => new Promise<string | null>(resolve => {
+        this.pending.set(it.id, resolve);
+        setTimeout(() => { if (this.pending.get(it.id) === resolve) { this.pending.delete(it.id); resolve(null); } }, 15000);
+      }));
+      const r = await NCEngine.translateModule.translateMessages({
+        list: batch.map(it => new TranslateMessageParam(it.id, 'auto', lang, it.text)), force: false,
+      });
+      if (!r.isOk) {
+        batch.forEach(it => { this.pending.get(it.id)?.(null); this.pending.delete(it.id); });
+        throw new Error(`Translation is not available right now (code ${r.code}).`);
+      }
+      (await Promise.all(waits)).forEach((t, j) => { if (t) out.set(batch[j].id, t); });
+    }
+    return out;
+  }
 
   async history(code: string): Promise<RoomMsg[]> {
     const query = BaseChannel.createMessagesQuery({

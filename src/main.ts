@@ -1,13 +1,14 @@
 import './styles.css';
 import qrcode from 'qrcode-generator';
 import { MockBackend } from './backend/mock.ts';
+import { clean } from './filter.ts';
 import { normalizeCode, type Backend, type RoomInfo, type Status } from './backend/types.ts';
 import {
   build, apply, rankedQuestions, pollTally, latestOpenPoll, recap, isQuiet, LIMITS,
   type RoomState, type RoomMsg, type Question, type Poll,
 } from './state.ts';
 
-// ---------- identity: one random guest ID per device, nickname only ----------
+// ---------- identity: one random device secret per browser, nickname only ----------
 const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
@@ -18,16 +19,19 @@ if (perTab) {
   store.get = (k: string) => { try { return sessionStorage.getItem(k); } catch { return null; } };
   store.set = (k: string, v: string) => { try { sessionStorage.setItem(k, v); } catch { /* ignore */ } };
 }
-function userId(): string {
-  let id = store.get('roomcode:uid');
+// The server derives the chat user ID from this secret, so nobody can sign in as
+// someone else just by reading their user ID off a message.
+function deviceSecret(): string {
+  let id = store.get('roomcode:device');
   if (!id) {
-    const a = new Uint8Array(15); crypto.getRandomValues(a);
-    id = 'u' + Array.from(a, b => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
-    store.set('roomcode:uid', id);
+    const a = new Uint8Array(32); crypto.getRandomValues(a);
+    id = Array.from(a, b => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
+    store.set('roomcode:device', id);
   }
   return id;
 }
-const ME = userId();
+const DEVICE = deviceSecret();
+let ME = store.get('roomcode:me') || ''; // known after the first connect
 const ADJ = ['Quiet', 'Bright', 'Swift', 'Curious', 'Calm', 'Bold', 'Lucky', 'Clever', 'Sunny', 'Brave'];
 const ANIMAL = ['Otter', 'Falcon', 'Panda', 'Fox', 'Heron', 'Lynx', 'Koala', 'Orca', 'Wren', 'Badger'];
 const suggestName = () => `${ADJ[Math.floor(Math.random() * ADJ.length)]} ${ANIMAL[Math.floor(Math.random() * ANIMAL.length)]}`;
@@ -52,13 +56,18 @@ let status: Status = 'offline';
 let connected = false;
 async function ensureConnected() {
   const b = await getBackend();
-  if (!connected) { await b.connect(ME, myName || 'Guest'); connected = true; }
+  if (!connected) {
+    ME = await b.connect(DEVICE, myName || 'Guest'); connected = true;
+    store.set('roomcode:me', ME);
+  }
   return b;
 }
 
 // ---------- tiny DOM helpers ----------
 const app = document.getElementById('app')!;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+// For anything people typed: escaped, with offensive words masked.
+const txt = (s: unknown) => esc(clean(String(s ?? '')));
 const $ = <T extends HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector<T>(sel);
 const joinUrl = (code: string) => `${location.origin}${location.pathname}#/r/${code}`;
 function qrSvg(text: string) {
@@ -241,7 +250,7 @@ function renderTop() {
   const n = Math.max(room.state.people.size, room.info.memberCount ?? 0);
   el.innerHTML = `
     <a class="icon-btn" href="#/" aria-label="Leave room">${ICON.back}</a>
-    <div class="title"><b>${esc(room.info.title)}</b>
+    <div class="title"><b>${txt(room.info.title)}</b>
       <small><span class="dot ${status}"></span>${status === 'connected' ? `${n} ${n === 1 ? 'person' : 'people'}` : status === 'connecting' ? 'Connecting…' : 'Offline'}${isHost() ? ' · you host' : ''}</small></div>
     <button class="code-chip" data-act="share" aria-label="Show join code">${esc(room.info.code)}</button>
     <button class="icon-btn" data-act="menu" aria-label="Room menu">${ICON.more}</button>`;
@@ -249,7 +258,7 @@ function renderTop() {
 
 function renderPin() {
   const el = $('#pin'); if (!el || !room) return;
-  el.innerHTML = room.state.pin ? `<div class="pin">${ICON.pin}<span>${esc(room.state.pin)}</span></div>` : '';
+  el.innerHTML = room.state.pin ? `<div class="pin">${ICON.pin}<span>${txt(room.state.pin)}</span></div>` : '';
 }
 
 function renderTabs() {
@@ -266,12 +275,12 @@ function renderTabs() {
 
 function questionCard(q: Question, rank = -1) {
   const mine = q.voters.has(ME);
-  const name = q.anonymous ? 'Anonymous' : esc(q.authorName);
+  const name = q.anonymous ? 'Anonymous' : txt(q.authorName);
   return `<article class="qcard${q.answered ? ' answered' : ''}${rank === 0 && !q.answered && q.voters.size > 1 ? ' top1' : ''}">
     <button class="vote" data-vote="${esc(q.id)}" aria-pressed="${mine}" aria-label="Upvote, ${q.voters.size} votes" ${room!.state.closed ? 'disabled' : ''}>${ICON.up}${q.voters.size}</button>
-    <div class="qbody"><div class="qtext">${esc(q.text)}</div>
+    <div class="qbody"><div class="qtext">${txt(q.text)}</div>${trLine(q.id)}
       <div class="qmeta">${q.answered ? '<span class="tag ok">Answered</span>' : '<span class="tag q">Question</span>'}<span>${name} · ${ago(q.sentTime)}</span>
-      ${isHost() && !room!.state.closed ? `<button class="link-btn" data-answer="${esc(q.id)}" data-val="${!q.answered}">${q.answered ? 'Reopen' : 'Mark answered'}</button>` : ''}</div></div>
+      ${isHost() && !room!.state.closed ? `<button class="link-btn" data-answer="${esc(q.id)}" data-val="${!q.answered}">${q.answered ? 'Reopen' : 'Mark answered'}</button>` : ''}${modBtn(q.id, q.authorId)}</div></div>
   </article>`;
 }
 
@@ -279,11 +288,11 @@ function pollCard(p: Poll) {
   const { counts, total } = pollTally(p);
   const mine = p.votes.get(ME);
   const showResults = mine !== undefined || p.closed || isHost();
-  return `<article class="poll"><span class="tag ${p.closed ? '' : 'q'}">${p.closed ? 'Poll closed' : 'Live poll'}</span><h3>${esc(p.question)}</h3>
+  return `<article class="poll"><span class="tag ${p.closed ? '' : 'q'}">${p.closed ? 'Poll closed' : 'Live poll'}</span><h3>${txt(p.question)}</h3>${trLine(p.id)}
     ${p.options.map((o, i) => {
       const pct = total ? Math.round(counts[i] * 100 / total) : 0;
       return `<button class="opt${mine === i ? ' mine' : ''}" data-poll="${esc(p.id)}" data-opt="${i}" ${p.closed || room!.state.closed ? 'disabled' : ''}>
-        <div class="fill" style="width:${showResults ? pct : 0}%"></div><span><span>${esc(o)}</span>${showResults ? `<span>${pct}%</span>` : ''}</span></button>`;
+        <div class="fill" style="width:${showResults ? pct : 0}%"></div><span><span>${txt(o)}</span>${showResults ? `<span>${pct}%</span>` : ''}</span></button>`;
     }).join('')}
     <div class="foot-note"><span>${total} ${total === 1 ? 'vote' : 'votes'}${mine === undefined && !p.closed ? ' · tap to vote' : ''}</span>
     ${isHost() && !p.closed && !room!.state.closed ? `<button class="link-btn" data-closepoll="${esc(p.id)}">Close poll</button>` : ''}</div></article>`;
@@ -304,14 +313,14 @@ function renderPane(stickToBottom: boolean) {
         while (i < feed.length && feed[i].type === 'join') { names.push(feed[i].senderId === ME ? 'You' : feed[i].senderName || 'Guest'); i++; }
         i--;
         const shown = names.length > 3 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} others` : names.join(names.length === 2 ? ' and ' : ', ');
-        html += `<div class="sys">${esc(shown)} joined</div>`;
+        html += `<div class="sys">${txt(shown)} joined</div>`;
         prev = '';
         continue;
       }
       if (m.type === 'chat') {
         const me = m.senderId === ME, cont = prev === m.senderId;
         const host = m.senderId === s.ownerId ? ' <span class="host">· host</span>' : '';
-        html += `<div class="msg${me ? ' me' : ''}${cont ? ' cont' : ''}"><div class="who">${me ? 'You' : esc(m.senderName)}${host}</div><div class="bubble">${esc(m.body.text)}</div></div>`;
+        html += `<div class="msg${me ? ' me' : ''}${cont ? ' cont' : ''}"><div class="who">${me ? 'You' : txt(m.senderName)}${host}</div><div class="brow"><div class="bubble">${txt(m.body.text)}${trLine(m.id)}</div>${modBtn(m.id, m.senderId)}</div></div>`;
         prev = m.senderId;
       } else {
         const q = s.questions.get(m.id), p = s.polls.get(m.id);
@@ -320,7 +329,7 @@ function renderPane(stickToBottom: boolean) {
       }
     }
     if (isQuiet(s)) html = (isHost() && !s.closed ? hostGuide(true)
-      : `<div class="empty"><b>The room is quiet.</b>Say hi, or ask the first question.</div>`) + html;
+      : `<div class="empty"><b>The room is quiet.</b>${s.removed.has(ME) ? 'You can still read along.' : 'Say hi, or ask the first question.'}</div>`) + html;
   } else if (room.tab === 'questions') {
     const qs = rankedQuestions(s);
     html = qs.length ? qs.map((q, i) => questionCard(q, i)).join('')
@@ -332,11 +341,12 @@ function renderPane(stickToBottom: boolean) {
   }
   el.innerHTML = html;
   if (room.tab === 'chat' && !isQuiet(s) && (stickToBottom || nearBottom)) el.scrollTop = el.scrollHeight;
+  queueTranslations();
 }
 
 function renderTyping() {
   const el = $('#typing'); if (!el || !room) return;
-  const names = typingIds.map(id => room!.state.people.get(id) || 'Someone').slice(0, 2);
+  const names = typingIds.map(id => clean(room!.state.people.get(id) || 'Someone')).slice(0, 2);
   el.textContent = names.length ? `${names.join(' and ')}${typingIds.length > 2 ? ' and others' : ''} ${names.length > 1 ? 'are' : 'is'} typing…` : '';
 }
 
@@ -345,6 +355,10 @@ function renderComposer(full: boolean) {
   if (room.state.closed) {
     el.innerHTML = `<div class="closed-bar"><p>This room has ended.${isHost() ? ' <button class="link-btn" data-act="recap">Copy recap</button>' : ' Thanks for joining.'}</p>
       <button class="btn accent block" data-act="startown">${isHost() ? 'Start a new room' : 'Run your own room. It takes 10 seconds'}</button></div>`;
+    return;
+  }
+  if (room.state.removed.has(ME)) {
+    el.innerHTML = `<div class="closed-bar"><p>The host removed you from this room.</p></div>`;
     return;
   }
   if (!full && $('#box', el)) return; // keep what the user is typing
@@ -384,7 +398,7 @@ async function sendAndApply(type: RoomMsg['type'], body: Record<string, any>) {
 
 // One delegated click handler for the whole room view.
 app.addEventListener('click', async e => {
-  const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act],[data-tab],[data-mode],[data-vote],[data-answer],[data-poll],[data-closepoll]');
+  const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act],[data-tab],[data-mode],[data-vote],[data-answer],[data-poll],[data-closepoll],[data-mod]');
   if (!t || !room) return;
   const d = t.dataset;
   try {
@@ -398,6 +412,7 @@ app.addEventListener('click', async e => {
     else if (d.answer) { await sendAndApply('answered', { qid: d.answer, answered: d.val === 'true' }); }
     else if (d.poll) { await sendAndApply('pollvote', { pollId: d.poll, option: Number(d.opt) }); }
     else if (d.closepoll) { await sendAndApply('pin', { text: room.state.pin ?? '', closePollId: d.closepoll }); }
+    else if (d.mod) showModerate(d.mod, d.uid!);
     else if (d.act === 'share') showShare(room.info.code);
     else if (d.act === 'screen') location.hash = `#/r/${room.info.code}/screen`;
     else if (d.act === 'menu') showMenu();
@@ -426,6 +441,92 @@ function hostGuide(inline: boolean) {
   </div>`;
 }
 
+// ---------- moderation (host only) ----------
+// Hiding and removing are room messages, so every phone and the projector drop the
+// posts at once; Nexconn also mutes a removed person so they cannot post again.
+const modBtn = (id: string, author: string) => isHost() && author !== ME
+  ? `<button class="mod-btn" data-mod="${esc(id)}" data-uid="${esc(author)}" aria-label="Moderate">${ICON.more}</button>` : '';
+
+function showModerate(id: string, uid: string) {
+  const name = clean(room!.state.people.get(uid) || 'this person');
+  sheet(`<h2>Moderate</h2><p class="muted">Only you, the host, see this.</p>
+    <div class="menu-list">
+      <button data-h="hide">Hide this post</button>
+      <button data-h="remove" class="danger">Remove ${esc(name)} from the room</button>
+      <button data-close>Cancel</button>
+    </div><p class="muted small">Removing hides everything they posted and stops them posting here for 24 hours.</p>`,
+    (el, close) => {
+      el.addEventListener('click', async e => {
+        const h = (e.target as HTMLElement).closest<HTMLElement>('[data-h]')?.dataset.h; if (!h) return;
+        close();
+        try {
+          if (h === 'hide') { await sendAndApply('hide', { id }); toast('Post hidden'); }
+          if (h === 'remove') {
+            await sendAndApply('remove', { userId: uid });
+            await backend.moderate(room!.info.code, 'remove', uid).catch(() => { /* posts stay hidden either way */ });
+            toast(`${name} was removed`);
+          }
+        } catch (err) { toast((err as Error).message); }
+      });
+    });
+}
+
+// ---------- translation (Nexconn built-in translation) ----------
+// With a language chosen, other people's posts show a translated line under them.
+const LANGS: [string, string][] = [
+  ['es', 'Español'], ['zh', '中文'], ['vi', 'Tiếng Việt'], ['ko', '한국어'], ['tl', 'Tagalog'], ['ar', 'العربية'],
+  ['ru', 'Русский'], ['uk', 'Українська'], ['pt', 'Português'], ['fr', 'Français'], ['hi', 'हिन्दी'], ['ja', '日本語'],
+  ['fa', 'فارسی'], ['de', 'Deutsch'], ['en', 'English'],
+];
+let lang = store.get('roomcode:lang') || '';
+const translated = new Map<string, string>(); // `${lang}:${id}` -> text
+const asked = new Set<string>();
+let trTimer: number | undefined;
+
+function trLine(id: string) {
+  const t = lang && translated.get(`${lang}:${id}`);
+  return t ? `<div class="tr" lang="${esc(lang)}">${txt(t)}</div>` : '';
+}
+
+// Translates what is on screen and not yet translated: others' posts, newest 40.
+function queueTranslations() {
+  if (!lang || !room) return;
+  clearTimeout(trTimer);
+  trTimer = window.setTimeout(async () => {
+    if (!room) return;
+    const items = room.state.feed.slice(-40)
+      .filter(m => m.senderId !== ME && m.type !== 'join' && !asked.has(`${lang}:${m.id}`))
+      .map(m => ({ id: m.id, text: String(m.type === 'poll' ? m.body.question : m.body.text ?? '').slice(0, 300) }))
+      .filter(it => it.text.trim());
+    if (!items.length) return;
+    const target = lang;
+    items.forEach(it => asked.add(`${target}:${it.id}`));
+    try {
+      const out = await backend.translate(items, target);
+      const src = new Map(items.map(it => [it.id, it.text]));
+      for (const [id, t] of out) if (t.trim().toLowerCase() !== src.get(id)!.trim().toLowerCase()) translated.set(`${target}:${id}`, t);
+      if (out.size && room && !$('.screen')) renderPane(false);
+    } catch (err) {
+      items.forEach(it => asked.delete(`${target}:${it.id}`));
+      toast((err as Error).message);
+    }
+  }, 250);
+}
+
+function showLanguages() {
+  sheet(`<h2>Translate messages</h2><p class="muted">Other people's posts get a line in your language. Translation by Nexconn.</p>
+    <div class="lang-grid">${LANGS.map(([c, n]) => `<button data-l="${c}" aria-pressed="${lang === c}">${esc(n)}</button>`).join('')}</div>
+    <div class="row"><button class="btn ghost" data-l="">Turn off</button><button class="btn" data-close>Done</button></div>`,
+    (el, close) => {
+      el.addEventListener('click', e => {
+        const b = (e.target as HTMLElement).closest<HTMLElement>('[data-l]'); if (!b) return;
+        lang = b.dataset.l!; store.set('roomcode:lang', lang);
+        close(); renderPane(false);
+        toast(lang ? `Translating into ${LANGS.find(l => l[0] === lang)![1]}` : 'Translation off');
+      });
+    });
+}
+
 function showShare(code: string) {
   const url = joinUrl(code);
   sheet(`<h2>Invite the room</h2><p class="muted">Point a phone camera at the code, or type the code at ${esc(location.host)}.</p>
@@ -441,13 +542,14 @@ function showShare(code: string) {
 
 function showMenu() {
   const host = isHost(), closed = room!.state.closed;
-  sheet(`<h2>${esc(room!.info.title)}</h2><p class="muted">Room ${esc(room!.info.code)} · ${room!.state.people.size} people · ${room!.state.feed.filter(m => m.type !== 'join').length} messages</p>
+  sheet(`<h2>${txt(room!.info.title)}</h2><p class="muted">Room ${esc(room!.info.code)} · ${room!.state.people.size} people · ${room!.state.feed.filter(m => m.type !== 'join').length} messages</p>
     <div class="menu-list">
       <button data-m="share">Show QR and code</button>
       ${host ? '<button data-m="guide">How to run a 10-minute session</button>' : ''}
       <button data-m="screen">Open projector view</button>
       ${host && !closed ? '<button data-m="pin">Pin an announcement</button><button data-m="poll">Start a poll</button>' : ''}
       ${host ? '<button data-m="recap">Copy recap (questions and poll results)</button>' : ''}
+      <button data-m="lang">Translate messages${lang ? ` (${esc(LANGS.find(l => l[0] === lang)?.[1] ?? lang)})` : ''}</button>
       <button data-m="name">Change my nickname</button>
       ${host && !closed ? '<button data-m="end" class="danger">End room for everyone</button>' : ''}
     </div>`,
@@ -462,8 +564,10 @@ function showMenu() {
         if (m === 'poll') showNewPoll();
         if (m === 'recap') copyRecap();
         if (m === 'name') { myName = ''; await askName(); toast(`You're now ${myName}`); }
+        if (m === 'lang') showLanguages();
         if (m === 'end' && confirm('End this room? Nobody will be able to post after this.')) {
           await sendAndApply('close', {}).catch(err => toast(err.message)); renderComposer(true);
+          backend.moderate(room!.info.code, 'close').catch(() => { /* the room view already ignores later posts */ });
         }
       });
     });
@@ -511,7 +615,7 @@ function showNewPoll() {
 }
 
 async function copyRecap() {
-  const text = recap(room!.info.title, room!.info.code, room!.state);
+  const text = clean(recap(room!.info.title, room!.info.code, room!.state));
   try { await navigator.clipboard.writeText(text); toast('Recap copied'); }
   catch { sheet(`<h2>Recap</h2><textarea class="field" style="height:50vh;padding:12px" readonly>${esc(text)}</textarea>`); }
 }
@@ -526,17 +630,17 @@ function renderScreen() {
   let pollHtml = '';
   if (poll) {
     const { counts, total } = pollTally(poll);
-    pollHtml = `<div class="spoll"><h2>${esc(poll.question)} <span class="muted">· ${total} ${total === 1 ? 'vote' : 'votes'}${poll.closed ? ', closed' : ''}</span></h2>
+    pollHtml = `<div class="spoll"><h2>${txt(poll.question)} <span class="muted">· ${total} ${total === 1 ? 'vote' : 'votes'}${poll.closed ? ', closed' : ''}</span></h2>
       ${poll.options.map((o, i) => { const pct = total ? Math.round(counts[i] * 100 / total) : 0;
-        return `<div class="sopt"><div class="fill" style="width:${pct}%"></div><span><span>${esc(o)}</span><span>${pct}%</span></span></div>`; }).join('')}</div>`;
+        return `<div class="sopt"><div class="fill" style="width:${pct}%"></div><span><span>${txt(o)}</span><span>${pct}%</span></span></div>`; }).join('')}</div>`;
   }
   app.innerHTML = `<div class="screen">
     <aside class="join">${qrSvg(url)}<div class="lbl">Scan, or go to ${esc(location.host)} and enter</div><div class="big">${esc(room.info.code)}</div></aside>
     <section>
-      <h1>${esc(room.info.title)}</h1>
+      <h1>${txt(room.info.title)}</h1>
       <div class="sub">${people} ${people === 1 ? 'person' : 'people'} in the room · ${s.closed ? 'ended' : 'live'} · <a href="#/r/${esc(room.info.code)}" style="color:inherit">back to room</a></div>
-      ${s.pin ? `<div class="spin">${esc(s.pin)}</div>` : ''}
-      ${qs.length ? qs.map(q => `<div class="sq${q.answered ? ' answered' : ''}"><span class="n">▲ ${q.voters.size}</span><span>${esc(q.text)}</span></div>`).join('')
+      ${s.pin ? `<div class="spin">${txt(s.pin)}</div>` : ''}
+      ${qs.length ? qs.map(q => `<div class="sq${q.answered ? ' answered' : ''}"><span class="n">▲ ${q.voters.size}</span><span>${txt(q.text)}</span></div>`).join('')
         : '<div class="sq"><span class="n">?</span><span>Questions will appear here, ranked by votes.</span></div>'}
       ${pollHtml}
     </section></div>`;

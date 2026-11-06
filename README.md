@@ -7,15 +7,20 @@ Built on the [Nexconn Chat SDK](https://docs.nexconn.ai/) (`@nexconn/chat` 26.2.
 ## Nexconn features used, and where
 | Feature | Where |
 |---|---|
-| `NCEngine.initialize` / `connect` with per-guest tokens | `src/backend/nexconn.ts`, `api/session.mjs` |
-| Group channels: one per room, created and joined via the Platform Chat API | `api/rooms.mjs`, `api/join.mjs` |
+| `NCEngine.initialize` / `connect` with per-guest tokens | `src/backend/nexconn.ts`, `session` in `api/src/lib.js` |
+| Group channels: one per room, created and joined via the Platform Chat API | `rooms`, `join` in `api/src/lib.js` |
 | Text messages with sender info (nickname) | chat in `src/backend/nexconn.ts` |
-| Custom persisted messages: questions, votes, answered marks, polls, poll votes, pins, room close | `RMC:*` types in `src/backend/nexconn.ts` |
+| Custom persisted messages: questions, votes, answered marks, polls, poll votes, pins, room close, joins, host hide / remove | `RMC:*` types in `src/backend/nexconn.ts` |
+| Group member mute and group freeze (Platform Chat API): a removed guest can't post; an ended room is frozen | `moderate` in `api/src/lib.js` |
+| Profanity filter (Platform Chat API word list) | `server/set-word-filter.mjs`, same list masked on screen by `src/filter.ts` |
+| Built-in translation (`translateModule.translateMessages`, `TranslateHandler`) | `translate()` in `src/backend/nexconn.ts`; menu → Translate messages |
 | Transient status messages for "is typing…" | `RMC:Typing` |
 | Message history (`createMessagesQuery`): late joiners rebuild the room | `history()` |
 | Connection status handler: live/connecting/offline dot | header |
 
 Room state is a pure fold over the message history (`src/state.ts`). So votes, polls and host actions survive reloads and late joins with no database of our own. Host-only actions sent by anyone else are ignored.
+
+Identity: each browser keeps a random device secret, and the server derives the chat user ID from it with an HMAC. Reading someone's user ID off a message is not enough to get a token for it, so nobody can act as the host.
 
 ## Run locally
 ```bash
@@ -40,5 +45,6 @@ npm run typecheck
 
 ## Privacy
 - Nickname only: no email, no phone, no location, no tracking scripts.
-- One random guest ID per device, kept in localStorage.
+- One random device secret per browser, kept in localStorage; the chat user ID is derived from it on the server.
+- The host can hide posts and remove people; a short offensive-word list is masked.
 - Rooms close after 24 hours.

@@ -41,11 +41,12 @@ export class MockBackend implements Backend {
     setTimeout(emit, 4100);
   }
 
-  async connect(userId: string, name: string) {
-    this.userId = userId; this.name = name;
+  async connect(device: string, name: string) {
+    this.userId = 'u' + device.slice(0, 23); this.name = name;
     this.statusCbs.forEach(cb => cb('connecting'));
     await new Promise(r => setTimeout(r, 150));
     this.statusCbs.forEach(cb => cb('connected'));
+    return this.userId;
   }
   async disconnect() { this.statusCbs.forEach(cb => cb('offline')); }
 
@@ -80,6 +81,12 @@ export class MockBackend implements Backend {
   }
 
   sendTyping(code: string) { this.bc.postMessage({ kind: 'typing', code, userId: this.userId }); }
+  async moderate() { /* the offline demo has no server to enforce it */ }
+  // Stand-in translation, so the flow can be tried offline.
+  async translate(items: { id: string; text: string }[], lang: string) {
+    await new Promise(r => setTimeout(r, 300));
+    return new Map(items.map(it => [it.id, `[${lang}] ${it.text}`]));
+  }
   onMessage(cb: (code: string, m: RoomMsg) => void) { this.msgCbs.push(cb); }
   onTyping(cb: (code: string, ids: string[]) => void) { this.typingCbs.push(cb); }
   onStatus(cb: (s: Status) => void) { this.statusCbs.push(cb); }

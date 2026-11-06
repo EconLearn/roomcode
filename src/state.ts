@@ -2,7 +2,7 @@
 // Every action (question, vote, poll, pin, close) is a persisted chat message,
 // so a late joiner rebuilds the exact room by replaying history.
 
-export type MsgType = 'chat' | 'question' | 'vote' | 'answered' | 'poll' | 'pollvote' | 'pin' | 'close' | 'join';
+export type MsgType = 'chat' | 'question' | 'vote' | 'answered' | 'poll' | 'pollvote' | 'pin' | 'close' | 'join' | 'hide' | 'remove';
 
 export interface RoomMsg {
   id: string;
@@ -41,10 +41,12 @@ export interface RoomState {
   pin: string | null;
   closed: boolean;
   people: Map<string, string>; // userId -> latest nickname seen
+  hidden: Set<string>; // message IDs the host hid
+  removed: Set<string>; // user IDs the host removed: everything they post is ignored
 }
 
 export function emptyState(ownerId: string): RoomState {
-  return { ownerId, feed: [], questions: new Map(), polls: new Map(), pin: null, closed: false, people: new Map([[ownerId, 'Host']]) };
+  return { ownerId, feed: [], questions: new Map(), polls: new Map(), pin: null, closed: false, people: new Map([[ownerId, 'Host']]), hidden: new Set(), removed: new Set() };
 }
 
 export const LIMITS = { chat: 500, question: 280, pollQuestion: 140, pollOption: 60, pollOptions: 6, pin: 200, name: 24, title: 60 };
@@ -55,9 +57,10 @@ const clip = (v: unknown, n: number) => String(v ?? '').trim().slice(0, n);
 // tampered client cannot pin, close, answer or run polls.
 export function apply(s: RoomState, m: RoomMsg): RoomState {
   const isHost = m.senderId === s.ownerId;
+  if (s.removed.has(m.senderId) || s.hidden.has(m.id)) return s;
   if (m.senderName && (m.type === 'chat' || m.type === 'question' || m.type === 'join')) s.people.set(m.senderId, m.senderName);
   else if (!s.people.has(m.senderId)) s.people.set(m.senderId, m.senderName || 'Guest');
-  if (s.closed && m.type !== 'close') return s;
+  if (s.closed && m.type !== 'close' && m.type !== 'hide' && m.type !== 'remove') return s;
   switch (m.type) {
     case 'chat': {
       if (!clip(m.body.text, LIMITS.chat)) return s;
@@ -119,6 +122,25 @@ export function apply(s: RoomState, m: RoomMsg): RoomState {
     }
     case 'close': {
       if (isHost) s.closed = true;
+      break;
+    }
+    case 'hide': {
+      const id = String(m.body.id);
+      if (!isHost) return s;
+      s.hidden.add(id);
+      s.feed = s.feed.filter(f => f.id !== id);
+      s.questions.delete(id);
+      s.polls.delete(id);
+      break;
+    }
+    case 'remove': {
+      const uid = String(m.body.userId);
+      if (!isHost || uid === s.ownerId) return s;
+      s.removed.add(uid);
+      s.feed = s.feed.filter(f => f.senderId !== uid);
+      for (const [id, q] of s.questions) { if (q.authorId === uid) s.questions.delete(id); else q.voters.delete(uid); }
+      for (const p of s.polls.values()) p.votes.delete(uid);
+      s.people.delete(uid);
       break;
     }
   }

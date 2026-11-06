@@ -89,3 +89,33 @@ test('join: one line per person, counts people, room still "quiet"', async () =>
   assert.equal(isQuiet(s2), false);
   assert.match(recap('T', 'ABCDE', s2), /Messages: 1/);
 });
+
+test('host hide drops one post; guest hide is ignored', () => {
+  const s = build('host', [
+    m('chat', 'a', { text: 'rude' }, 'c1'),
+    m('question', 'b', { text: 'ok?' }, 'q1'),
+    m('hide', 'b', { id: 'c1' }),
+    m('hide', 'host', { id: 'q1' }),
+  ]);
+  assert.deepEqual(s.feed.map(f => f.id), ['c1']);
+  assert.equal(s.questions.size, 0);
+});
+
+test('remove hides everything a person posted, their votes, and anything later', () => {
+  const s = build('host', [
+    m('question', 'a', { text: 'good' }, 'q1'),
+    m('question', 'troll', { text: 'bad' }, 'q2'),
+    m('vote', 'troll', { qid: 'q1' }),
+    m('poll', 'host', { question: 'x?', options: ['1', '2'] }, 'p1'),
+    m('pollvote', 'troll', { pollId: 'p1', option: 0 }),
+    m('remove', 'host', { userId: 'troll' }),
+    m('chat', 'troll', { text: 'still here' }),
+    m('remove', 'a', { userId: 'host' }),
+  ]);
+  assert.deepEqual([...s.questions.keys()], ['q1']);
+  assert.equal(s.questions.get('q1')!.voters.size, 1);
+  assert.equal(pollTally(s.polls.get('p1')!).total, 0);
+  assert.equal(s.feed.some(f => f.senderId === 'troll'), false);
+  assert.equal(s.people.has('troll'), false);
+  assert.equal(s.removed.has('host'), false);
+});

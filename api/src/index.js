@@ -1,4 +1,4 @@
-// Azure Static Web Apps managed functions: POST /api/session, /api/rooms, /api/join.
+// Azure Static Web Apps managed functions: POST /api/session, /api/rooms, /api/join, /api/moderate.
 // NEXCONN_APP_KEY / NEXCONN_APP_SECRET / NEXCONN_API_HOST come from the app's settings in Azure.
 import { app } from '@azure/functions';
 import { routes, run } from './lib.js';

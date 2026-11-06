@@ -1,9 +1,12 @@
 // The room API: Azure Static Web Apps functions (src/index.js) and, locally, server/dev-api.mjs.
 // The App Secret stays here, server-side. The browser only ever sees per-user tokens.
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, createHmac, randomInt } from 'node:crypto';
 
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 export const USER_ID = /^[A-Za-z0-9]{12,40}$/;
+// Each browser keeps a random device secret; its chat user ID is derived from it here.
+// Seeing someone's user ID in a message is then not enough to sign in as them.
+export const DEVICE = /^[A-Za-z0-9]{24,64}$/;
 export const ROOM_CODE = /^[A-HJ-NP-Z2-9]{5}$/;
 
 export const newCode = () => Array.from({ length: 5 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
@@ -50,19 +53,23 @@ export async function run(fn, body) {
   }
 }
 
-// Issues a chat token for a guest. The user ID is a random ID the browser keeps
-// in localStorage, so one person on one device is one Nexconn user.
-export async function session({ userId, name }) {
-  if (!USER_ID.test(String(userId))) throw fail(400, 'Bad user ID.');
+export function userIdFor(device) {
+  if (!DEVICE.test(String(device))) throw fail(400, 'Bad device ID.');
+  return 'u' + createHmac('sha256', config().secret).update(`uid:${device}`).digest('hex').slice(0, 23);
+}
+
+// Issues a chat token for a guest. One device (one browser) is one Nexconn user.
+export async function session({ device, name }) {
+  const userId = userIdFor(device);
   const nick = clip(name, 24) || 'Guest';
   const j = await nexconn('/v4/auth/access-token/issue', { userId, name: nick });
   if (j.code !== 0 || !j.result?.accessToken) throw fail(502, `Token not issued (code ${j.code}).`);
-  return { token: j.result.accessToken };
+  return { userId, token: j.result.accessToken };
 }
 
 // Creates a room: a group channel `rc<CODE>` owned by the host, open to join.
-export async function rooms({ userId, title }) {
-  if (!USER_ID.test(String(userId))) throw fail(400, 'Bad user ID.');
+export async function rooms({ device, title }) {
+  const userId = userIdFor(device);
   const name = clip(title, 60) || 'Untitled room';
   for (let attempt = 0; attempt < 4; attempt++) {
     const code = newCode();
@@ -76,13 +83,31 @@ export async function rooms({ userId, title }) {
 }
 
 // Adds a guest to a room's group channel and returns the room's title and host.
-export async function join({ userId, code }) {
-  if (!USER_ID.test(String(userId))) throw fail(400, 'Bad user ID.');
+async function joinAs(userId, code) {
   if (!ROOM_CODE.test(String(code))) throw fail(400, 'Room codes are 5 letters or digits.');
   const j = await nexconn('/v4/group-channel/join', { channelId: `rc${code}`, userIds: [userId] });
   if (j.code !== 0) throw fail(404, 'No room with that code.');
   const g = j.result ?? j;
   return { code, title: g.name || 'Room', ownerId: g.owner, createdAt: g.createdAt || Date.now(), memberCount: g.memberCount };
 }
+export const join = ({ device, code }) => joinAs(userIdFor(device), code);
 
-export const routes = { session, rooms, join };
+// Host-only moderation, enforced by Nexconn itself (the room view also hides the posts):
+// `remove` mutes a guest in this room for 24 hours; `close` freezes the room so nobody can post.
+export async function moderate({ device, code, action, userId }) {
+  const caller = userIdFor(device);
+  const room = await joinAs(caller, code);
+  if (room.ownerId !== caller) throw fail(403, 'Only the host can do that.');
+  const channelId = `rc${code}`;
+  let j;
+  if (action === 'remove') {
+    if (!USER_ID.test(String(userId)) || userId === caller) throw fail(400, 'Bad user ID.');
+    j = await nexconn('/v4/group-channel/user/mute-list/add', { userIds: [userId], channelId, durationMinutes: 1440 });
+  } else if (action === 'close') {
+    j = await nexconn('/v4/group-channel/freeze-list/add', { channelIds: [channelId] });
+  } else throw fail(400, 'Unknown action.');
+  if (j.code !== 0) throw fail(502, `Moderation failed (code ${j.code}).`);
+  return { ok: true };
+}
+
+export const routes = { session, rooms, join, moderate };
