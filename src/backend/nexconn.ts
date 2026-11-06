@@ -129,7 +129,7 @@ export class NexconnBackend implements Backend {
       });
       if (!r.isOk) {
         batch.forEach(it => { this.pending.get(it.id)?.(null); this.pending.delete(it.id); });
-        throw new Error(`Translation is not available right now (code ${r.code}).`);
+        throw new Error(`Translation isn't switched on for this site yet (code ${r.code}).`);
       }
       (await Promise.all(waits)).forEach((t, j) => { if (t) out.set(batch[j].id, t); });
     }

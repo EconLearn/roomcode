@@ -437,7 +437,7 @@ function hostGuide(inline: boolean) {
     <h3>Run a 10-minute session</h3>
     <ol>${GUIDE_STEPS.map(([t, h, d]) => `<li><span class="t">${t}</span><div><b>${h}</b><p>${d}</p></div></li>`).join('')}</ol>
     ${inline ? `<div class="row"><button class="btn accent" data-act="screen">Projector view</button><button class="btn ghost" data-act="share">Show QR</button></div>` : ''}
-    <p class="muted small">Only nicknames are shared. Rooms close after 24 hours. <a href="./guide.html" target="_blank" rel="noopener">One-page guide for teachers</a></p>
+    <p class="muted small">Tap ••• on any post to hide it or remove the person. Only nicknames are shared. Rooms close after 24 hours. <a href="./guide.html" target="_blank" rel="noopener">One-page guide for teachers</a></p>
   </div>`;
 }
 
@@ -482,6 +482,7 @@ let lang = store.get('roomcode:lang') || '';
 const translated = new Map<string, string>(); // `${lang}:${id}` -> text
 const asked = new Set<string>();
 let trTimer: number | undefined;
+let trBroken = false; // after one failure, stop retrying (and toasting) until the language is changed
 
 function trLine(id: string) {
   const t = lang && translated.get(`${lang}:${id}`);
@@ -490,7 +491,7 @@ function trLine(id: string) {
 
 // Translates what is on screen and not yet translated: others' posts, newest 40.
 function queueTranslations() {
-  if (!lang || !room) return;
+  if (!lang || !room || trBroken) return;
   clearTimeout(trTimer);
   trTimer = window.setTimeout(async () => {
     if (!room) return;
@@ -508,6 +509,7 @@ function queueTranslations() {
       if (out.size && room && !$('.screen')) renderPane(false);
     } catch (err) {
       items.forEach(it => asked.delete(`${target}:${it.id}`));
+      trBroken = true;
       toast((err as Error).message);
     }
   }, 250);
@@ -520,7 +522,7 @@ function showLanguages() {
     (el, close) => {
       el.addEventListener('click', e => {
         const b = (e.target as HTMLElement).closest<HTMLElement>('[data-l]'); if (!b) return;
-        lang = b.dataset.l!; store.set('roomcode:lang', lang);
+        lang = b.dataset.l!; store.set('roomcode:lang', lang); trBroken = false;
         close(); renderPane(false);
         toast(lang ? `Translating into ${LANGS.find(l => l[0] === lang)![1]}` : 'Translation off');
       });
