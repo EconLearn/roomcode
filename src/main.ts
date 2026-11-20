@@ -143,7 +143,7 @@ function renderHome(prefill = '', error = '') {
   <main class="home">
     <div class="logo"><span class="logo-mark"><i></i><i></i><i></i><i></i></span>Roomcode</div>
     <h1>Hear from <em>the whole room</em>, not just the loudest voice.</h1>
-    <p class="lede">Show a QR. Everyone asks, votes and answers polls from their phone, in their own language, with or without their name. No app, no account.</p>
+    <p class="lede">Show a QR. Everyone asks, votes and answers polls from their phone, with or without their name. No app, no account.</p>
     <form id="jf">
       <input class="code-input" id="code" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false"
         maxlength="5" placeholder="CODE" value="${esc(prefill)}" aria-label="Room code" />
@@ -162,9 +162,9 @@ function renderHome(prefill = '', error = '') {
   <aside class="home-art" aria-hidden="true">
     <div class="art-card"><div class="now">Answering now</div><b>Why do cells need mitochondria if they already have a nucleus?</b><small>▲ 14 · Anonymous</small></div>
     <div class="art-card"><span class="tag q">Second take</span><b>Where is most ATP made?</b>
-      <div class="art-bar"><i style="width:82%"></i><span>In the mitochondria</span><span><s>54%</s> 82%</span></div>
-      <div class="art-bar"><i style="width:18%"></i><span>In the nucleus</span><span><s>46%</s> 18%</span></div>
-      <div class="moved"><b>8</b> of 28 changed their mind</div></div>
+      <div class="art-bar"><i style="width:78%"></i><span>In the mitochondria</span><span><s>48%</s> 78%</span></div>
+      <div class="art-bar"><i style="width:22%"></i><span>In the nucleus</span><span><s>52%</s> 22%</span></div>
+      <div class="moved"><b>8</b> of 27 changed their mind</div></div>
     <div class="art-card lost-meter on"><div class="lm-row"><span>${ICON.hand}<b>4 people lost</b></span></div><div class="lm-bar"><i style="width:15%"></i></div><p class="muted small">One private tap. The host sees the count, never names.</p></div>
     <p class="art-note">What a room looks like (example)</p>
   </aside>
@@ -355,7 +355,7 @@ function renderTop() {
   el.innerHTML = `
     <a class="icon-btn" href="#/" aria-label="Leave room">${ICON.back}</a>
     <div class="title"><b>${txt(room.info.title)}</b>
-      <small><span class="dot ${room.state.closed ? 'offline' : status}"></span><span>${room.state.closed ? `Ended · ${plural(n, 'person', 'people')}` : status === 'connected' ? plural(n, 'person', 'people') : status === 'connecting' ? 'Connecting…' : 'Offline'}${isHost() ? ' · you host' : ''}</span></small></div>
+      <small><span class="dot ${room.state.closed ? 'offline' : status}"></span><span>${room.state.closed ? `Ended · ${plural(n, 'person', 'people')}` : (status === 'connected' ? plural(n, 'person', 'people') : status === 'connecting' ? 'Connecting…' : 'Offline') + (isHost() ? ' · you host' : '')}</span></small></div>
     <button class="code-chip" data-act="share" aria-label="Show join code">${esc(room.info.code)}</button>
     <button class="icon-btn" data-act="menu" aria-label="Room menu">${ICON.more}</button>`;
 }
@@ -377,9 +377,9 @@ function renderDash() {
       </div>
       <div class="dash-card"><dl class="stats" id="dstats"></dl><div id="dlost"></div></div>
       <div class="dash-card dash-actions">
-        ${closed ? '' : '<button class="btn accent block" data-act="newpoll">Start a poll</button><button class="btn ghost block" data-act="pinmsg">Pin an announcement</button>'}
+        ${closed ? '' : '<button class="btn accent block" data-act="newpoll">Start a poll</button><button class="btn ghost block" data-act="pinmsg">Pin a note</button>'}
         <button class="btn ghost block" data-act="recap">Copy recap</button>
-        ${closed ? '<button class="btn accent block" data-act="startown">Start a new room</button>' : '<button class="btn ghost block danger" data-act="end">End room for everyone</button>'}
+        ${closed ? '<button class="btn accent block" data-act="startown">Start a new room</button>' : '<button class="btn ghost block danger wide" data-act="end">End room for everyone</button>'}
       </div>
       <p class="muted small dash-tip">Tap ••• on any post to hide it or remove the person. <a href="./guide.html" target="_blank" rel="noopener">One-page guide</a></p>`;
   }
@@ -413,7 +413,7 @@ function renderTabs() {
   const tab = (id: Tab, label: string, badge = '') =>
     `<button class="tab" role="tab" data-tab="${id}" aria-selected="${room!.tab === id}">${label}${badge}</button>`;
   el.innerHTML = (room.state.closed ? tab('recap', 'Recap') : '') +
-    tab('questions', 'Questions', open ? ` <span class="badge">${open}</span>` : '') +
+    tab('questions', 'Questions', open && !room.state.closed ? ` <span class="badge">${open}</span>` : '') +
     tab('chat', 'Chat') +
     tab('poll', 'Polls', poll && !voted && !room.state.closed ? ' <span class="badge">1</span>' : '');
 }
@@ -457,7 +457,7 @@ function pollCard(p: Poll) {
       return `<button class="opt${mine === i ? ' mine' : ''}" data-poll="${esc(p.id)}" data-opt="${i}" ${over ? 'disabled' : ''}>
         <div class="fill" style="width:${showResults ? pct : 0}%"></div>${was && showResults ? `<i class="was" style="left:${was[i]}%" title="First answer: ${was[i]}%"></i>` : ''}<span><span>${txt(o)}</span>${showResults ? `<span>${was && was[i] !== pct ? `<s>${was[i]}%</s> ` : ''}${pct}%</span>` : ''}</span></button>`;
     }).join('')}
-    <div class="foot-note"><span>${plural(total, 'vote')}${over ? '' : mine === undefined ? ' · tap to vote' : ' · tap another to change'}</span>
+    <div class="foot-note"><span>${plural(total, 'vote')}${over || isHost() ? '' : mine === undefined ? ' · tap to vote' : ' · tap another to change'}</span>
     ${isHost() && !over ? `<span class="pctl">${!second && total ? `<button class="link-btn" data-retake="${esc(p.id)}" title="After you have discussed it, let everyone answer again and see who moved">Ask again</button>` : ''}<button class="link-btn" data-closepoll="${esc(p.id)}">Close poll</button></span>` : ''}</div>
     ${second ? `<div class="moved"><b>${moved}</b> of ${p.round1!.size} changed their mind</div>` : ''}</article>`;
 }
@@ -471,7 +471,7 @@ function recapView() {
       <small>${g.lead.answered ? '<span class="tag ok">Answered</span>' : '<span class="tag">Still open</span>'}${g.others.length ? ` asked ${g.others.length + 1} ways` : ''}</small>
       ${g.others.map(o => `<p class="also">also: ${txt(o.text)}</p>`).join('')}</div></li>`).join('');
   return `<article class="recap">
-    <span class="tag">Recap${r.minutes ? ` · ran ${r.minutes} min` : ''}</span><h2>${txt(room!.info.title)}</h2>
+    <span class="tag">Recap${r.minutes && r.minutes >= 5 ? ` · ran ${r.minutes} min` : ''}</span><h2>${txt(room!.info.title)}</h2>
     <dl class="stats">${stats}</dl>
     ${groups ? `<h3>Most wanted</h3><ol class="rlist">${groups}</ol>` : '<p class="muted">No questions were asked in this room.</p>'}
     ${r.polls.length ? '<h3>Polls</h3>' + r.polls.map(p => pollCard(p.poll)).join('') : ''}
@@ -513,7 +513,7 @@ function renderPane(stickToBottom: boolean) {
       : `<div class="empty"><b>${s.closed ? 'No questions were asked.' : 'Ask the first question'}</b>${s.closed ? '' : isHost() ? 'Questions appear here as people ask. The room votes the best ones to the top.' : 'Type it in the box below. The room votes the best ones to the top, and you can hide your name.'}</div>`;
   } else {
     const polls = [...s.polls.values()].sort((a, b) => b.sentTime - a.sentTime);
-    html = (isHost() && !s.closed ? `<button class="btn accent block" data-act="newpoll" style="margin:4px 0 6px">New poll</button>` : '') +
+    html = (isHost() && !s.closed && !wide() ? `<button class="btn accent block" data-act="newpoll" style="margin:4px 0 6px">Start a poll</button>` : '') +
       (polls.length ? polls.map(pollCard).join('') : `<div class="empty"><b>No polls yet.</b>${isHost() ? 'Ask the room a quick question with 2 to 6 answers.' : 'When the host starts one, it shows up here.'}</div>`);
   }
   el.innerHTML = html;
@@ -882,8 +882,8 @@ function renderScreen() {
   const s = room.state, url = joinUrl(room.info.code);
   const people = peopleCount();
   const ranked = rankedQuestions(s).filter(q => !q.answered);
-  const lead = ranked[0], next = ranked.slice(1, 4);
   const poll = latestOpenPoll(s) ?? [...s.polls.values()].sort((a, b) => b.sentTime - a.sentTime)[0];
+  const lead = ranked[0], next = ranked.slice(1, poll ? 3 : 5); // leave room for the poll
   const pollHtml = (p: Poll | undefined, final = false) => {
     if (!p) return '';
     const { counts, total } = pollTally(p);
@@ -902,13 +902,13 @@ function renderScreen() {
         <div class="lbl">That's a wrap · ${txt(room.info.title)}</div>
         <h1 class="lead">Thank you for ${r.asked > 1 ? `your ${r.asked} questions` : 'joining'}.</h1>
         <div class="sstats">${([['people', r.people], ['questions', r.asked], ['upvotes', r.votes], ...(r.pollVotes ? [['poll votes', r.pollVotes]] : [])] as [string, number][]).map(([k, v]) => `<div><b>${v}</b>${k}</div>`).join('')}</div>
-        ${r.groups.length ? `<div class="lbl">Most wanted</div>` + r.groups.slice(0, 3).map(g => `<div class="sq${g.lead.answered ? ' done' : ''}"><span class="n">▲ ${g.votes}</span><span>${txt(g.lead.text)}</span></div>`).join('') : ''}
+        ${r.groups.length ? `<div class="lbl">Most wanted</div>` + r.groups.slice(0, 3).map(g => `<div class="sq"><span class="n">▲ ${g.votes}</span><span>${txt(g.lead.text)}</span>${g.lead.answered ? '<span class="sdone">answered</span>' : ''}</div>`).join('') : ''}
         ${pollHtml(r.polls[r.polls.length - 1]?.poll, true)}
       </section>
       <aside class="join own">${qrSvg(home)}<div class="lbl"><b>Run your own room</b><br/>Scan. It takes 10 seconds.</div></aside>${back}</div>`;
     return;
   }
-  app.innerHTML = `<div class="screen">
+  app.innerHTML = `<div class="screen${poll ? ' haspoll' : ''}">
     <section>
       <div class="shead"><b>${txt(room.info.title)}</b><span>${plural(people, 'person', 'people')} in the room</span></div>
       ${s.pin ? `<div class="spin">${txt(s.pin)}</div>` : ''}
