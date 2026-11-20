@@ -214,9 +214,9 @@ export function latestOpenPoll(s: RoomState): Poll | null {
 }
 
 // ---------- similar questions (plain word overlap; runs in the browser) ----------
-const STOP = new Set('a an the is are was were be to of in on for and or do does did can could will would should we you i it this that what when where why how with at by from our your my about there have has'.split(' '));
+const STOP = new Set('a an the is are was were be to of in on for and or do does did can could will would should we you i it this that what when where why how with at by from our your my about there have has too also well as if they already'.split(' '));
 // Rough stem so "shared", "sharing" and "shares" match "share".
-const stem = (w: string) => w.length > 4 ? w.replace(/(ing|ed|es|s|e)$/, '') : w;
+const stem = (w: string) => w.length > 4 ? w.replace(/wards?$/, '').replace(/(ing|ed|es|s|e)$/, '') : w;
 export function keywords(text: string): Set<string> {
   return new Set(text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)
     .filter(w => w.length > 1 && !STOP.has(w)).map(stem));
@@ -227,6 +227,15 @@ export function similarity(a: Set<string>, b: Set<string>): number {
   for (const w of a) if (b.has(w)) both++;
   return both / Math.min(a.size, b.size);
 }
+// Stricter than `similarity`: two finished questions are "the same" only if most words of BOTH overlap,
+// so questions that merely share the lesson's topic stay apart.
+export function sameQuestion(a: Set<string>, b: Set<string>): boolean {
+  if (!a.size || !b.size) return false;
+  let both = 0;
+  for (const w of a) if (b.has(w)) both++;
+  return both >= 2 && (both / Math.min(a.size, b.size) + both / Math.max(a.size, b.size)) / 2 >= 0.65;
+}
+
 // Open questions that look like the draft, best match first. Used to offer "vote for this instead".
 export function lookalikes(s: RoomState, draft: string, limit = 2): Question[] {
   const k = keywords(draft);
@@ -249,7 +258,7 @@ export function summarize(s: RoomState): Summary {
   const groups: Summary['groups'] = [];
   for (const q of qs) {
     const k = keywords(q.text);
-    const g = groups.find(g => similarity(k, keywords(g.lead.text)) >= 0.6);
+    const g = groups.find(g => sameQuestion(k, keywords(g.lead.text)));
     if (g) { g.others.push(q); g.votes += q.voters.size; } else groups.push({ lead: q, others: [], votes: q.voters.size });
   }
   groups.sort((a, b) => b.votes - a.votes);

@@ -171,3 +171,14 @@ test('similar questions: offered while typing, grouped in the recap', () => {
   assert.equal(r.groups[0].votes, 3);
   assert.match(recap('T', 'ABCDE', s), /also asked: Are the slides shared afterwards\?/);
 });
+
+test('recap grouping keeps same-topic questions apart', () => {
+  const r = summarize(build('host', [
+    m('question', 'a', { text: 'Why do cells need mitochondria if they already have a nucleus?' }, 'q1'),
+    m('question', 'b', { text: 'Do plant cells have mitochondria too?' }, 'q2'),
+    m('question', 'c', { text: 'What happens to a cell with no mitochondria?' }, 'q3'),
+    m('question', 'd', { text: 'Do plants have mitochondria as well as chloroplasts?' }, 'q4'),
+  ]));
+  assert.equal(r.groups.length, 3);
+  assert.deepEqual(r.groups.find(g => g.lead.id === 'q2')!.others.map(q => q.id), ['q4']);
+});

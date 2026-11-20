@@ -146,7 +146,7 @@ function renderHome(prefill = '', error = '') {
     <p class="lede">Show a QR. Everyone asks, votes and answers polls from their phone, with or without their name. No app, no account.</p>
     <form id="jf">
       <input class="code-input" id="code" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false"
-        maxlength="5" placeholder="CODE" value="${esc(prefill)}" aria-label="Room code" />
+        maxlength="5" placeholder="A1B2C" value="${esc(prefill)}" aria-label="Room code" />
       <p class="err" id="jerr" role="alert">${esc(error)}</p>
       <button class="btn block" id="joinBtn" type="submit">Join room</button>
     </form>
@@ -160,10 +160,10 @@ function renderHome(prefill = '', error = '') {
     <p class="foot"><a href="#/r/${FEEDBACK_CODE}">Ideas or problems? Tell us in room ${FEEDBACK_CODE}</a><br/>Built on the Nexconn Chat SDK. <span class="mode-pill">${APP_KEY && !forceMock ? 'Live' : 'Offline demo: rooms are shared between tabs of this browser'}</span></p>
   </main>
   <aside class="home-art" aria-hidden="true">
-    <div class="art-card"><div class="now">Answering now</div><b>Why do cells need mitochondria if they already have a nucleus?</b><small>▲ 14 · Anonymous</small></div>
+    <div class="art-card"><div class="now">Answering now</div><b>Why do cells need mitochondria if they already have a nucleus?</b><small>▲ 14 · Maya</small></div>
     <div class="art-card"><span class="tag q">Second take</span><b>Where is most ATP made?</b>
-      <div class="art-bar"><i style="width:78%"></i><span>In the mitochondria</span><span><s>48%</s> 78%</span></div>
       <div class="art-bar"><i style="width:22%"></i><span>In the nucleus</span><span><s>52%</s> 22%</span></div>
+      <div class="art-bar"><i style="width:78%"></i><span>In the mitochondria</span><span><s>48%</s> 78%</span></div>
       <div class="moved"><b>8</b> of 27 changed their mind</div></div>
     <div class="art-card lost-meter on"><div class="lm-row"><span>${ICON.hand}<b>4 people lost</b></span></div><div class="lm-bar"><i style="width:15%"></i></div><p class="muted small">One private tap. The host sees the count, never names.</p></div>
     <p class="art-note">What a room looks like (example)</p>
@@ -451,7 +451,7 @@ function pollCard(p: Poll) {
   const moved = changedMinds(p), second = !!p.round1;
   const first = p.round1?.get(ME);
   return `<article class="poll"><span class="tag ${over ? '' : 'q'}">${over ? 'Final result' : second ? 'Second take' : 'Live poll'}</span><h3>${txt(p.question)}</h3>${trLine(p.id)}
-    ${second && !over && first !== undefined && !isHost() ? `<p class="retake">${mine !== undefined && mine !== first ? `First you said <b>${txt(p.options[first])}</b>. Now <b>${txt(p.options[mine])}</b>.` : `You said <b>${txt(p.options[first])}</b>. Still think so? Tap another to change.`}</p>` : ''}
+    ${second && !over && first !== undefined && !isHost() ? `<p class="retake">${mine !== undefined && mine !== first ? `First you said <b>“${txt(p.options[first])}”</b>. Now <b>“${txt(p.options[mine])}”</b>.` : `You said <b>“${txt(p.options[first])}”</b>. Still think so? Tap another to change.`}</p>` : ''}
     ${p.options.map((o, i) => {
       const pct = total ? Math.round(counts[i] * 100 / total) : 0;
       return `<button class="opt${mine === i ? ' mine' : ''}" data-poll="${esc(p.id)}" data-opt="${i}" ${over ? 'disabled' : ''}>
@@ -559,7 +559,15 @@ function renderComposer(full: boolean) {
     el.innerHTML = `<div class="closed-bar"><p>The host removed you from this room.</p></div>`;
     return;
   }
-  if (room.tab === 'poll' || room.tab === 'recap') { composerKey = room.tab; el.innerHTML = ''; return; }
+  if (room.tab === 'recap') { composerKey = room.tab; el.innerHTML = ''; return; }
+  if (room.tab === 'poll') {
+    // No text box on Polls, but a guest can still say they are lost.
+    const on = s.lost.has(ME);
+    composerKey = `poll|${on}`;
+    el.innerHTML = isHost() ? '' : `<div class="composer"><div class="who-row" style="margin-bottom:0"><span>Not following?</span>
+      <button class="lost-btn" data-act="imlost" aria-pressed="${on}" aria-label="I'm lost. Only the host sees a count, no names.">${ICON.hand}${on ? 'You said: lost' : 'I’m lost'}</button></div></div>`;
+    return;
+  }
   const q = room.tab === 'questions';
   const key = `${room.tab}|${myName}|${s.lost.has(ME)}`;
   if (!full && key === composerKey && $('#box', el)) return; // keep what the user is typing
@@ -668,7 +676,7 @@ const GUIDE_STEPS: [string, string, string][] = [
   ['1 min', 'Say one line', '“Scan this and ask anything. You can hide your name. If I lose you, tap I’m lost.”'],
   ['2 min', 'Let questions come in', 'The room votes the best ones to the top. Tap <b>Answer now</b> to put one on every screen, then <b>Done, next</b>.'],
   ['6 min', 'Run a quick poll', '<b>Start a poll</b> with 2 to 6 answers. After you discuss it, <b>Ask again</b> and see who changed their mind.'],
-  ['9 min', 'Pin the takeaway', 'Menu → <b>Pin an announcement</b>: the next step or the homework.'],
+  ['9 min', 'Pin the takeaway', '<b>Pin a note</b> (in the menu): the next step or the homework.'],
   ['10 min', 'End and keep the recap', 'Menu → <b>End room</b>. Every phone and the projector switch to the recap; copy or download it.'],
 ];
 function hostGuide(inline: boolean) {
@@ -796,7 +804,7 @@ function showMenu() {
       <button data-m="share">Show QR and code</button>
       ${host ? '<button data-m="guide">How to run a 10-minute session</button>' : ''}
       <button data-m="screen">Open projector view</button>
-      ${host && !closed ? '<button data-m="pin">Pin an announcement</button><button data-m="poll">Start a poll</button>' : ''}
+      ${host && !closed ? '<button data-m="pin">Pin a note</button><button data-m="poll">Start a poll</button>' : ''}
       ${host || closed ? '<button data-m="recap">Copy recap (questions and poll results)</button>' : ''}
       <button data-m="big">${document.documentElement.classList.contains('big') ? 'Normal text size' : 'Larger text'}</button>
       ${trDown() ? '' : `<button data-m="lang">Translate messages${lang ? ` (${esc(LANGS.find(l => l[0] === lang)?.[1] ?? lang)})` : ''}</button>`}
@@ -822,7 +830,7 @@ function showMenu() {
 }
 
 function showPin() {
-  sheet(`<h2>Pin an announcement</h2><p class="muted">Shows at the top for everyone. Leave empty to unpin.</p>
+  sheet(`<h2>Pin a note</h2><p class="muted">Shows at the top for everyone. Leave empty to unpin.</p>
     <form id="pf"><textarea class="field" style="height:96px;padding:12px 16px" id="pt" maxlength="${LIMITS.pin}">${esc(room!.state.pin ?? '')}</textarea>
     <div class="row"><button class="btn ghost" type="button" data-close>Cancel</button><button class="btn accent" type="submit">Pin</button></div></form>`,
     (el, close) => {
@@ -897,12 +905,12 @@ function renderScreen() {
   if (s.closed) {
     // Closing slide: what the room did, and how to run the next one.
     const r = summarize(s), home = `${location.origin}${location.pathname}`;
-    app.innerHTML = `<div class="screen ended">
+    app.innerHTML = `<div class="screen ended${r.polls.length ? ' haspoll' : ''}">
       <section>
         <div class="lbl">That's a wrap · ${txt(room.info.title)}</div>
         <h1 class="lead">Thank you for ${r.asked > 1 ? `your ${r.asked} questions` : 'joining'}.</h1>
         <div class="sstats">${([['people', r.people], ['questions', r.asked], ['upvotes', r.votes], ...(r.pollVotes ? [['poll votes', r.pollVotes]] : [])] as [string, number][]).map(([k, v]) => `<div><b>${v}</b>${k}</div>`).join('')}</div>
-        ${r.groups.length ? `<div class="lbl">Most wanted</div>` + r.groups.slice(0, 3).map(g => `<div class="sq"><span class="n">▲ ${g.votes}</span><span>${txt(g.lead.text)}</span>${g.lead.answered ? '<span class="sdone">answered</span>' : ''}</div>`).join('') : ''}
+        ${r.groups.length ? `<div class="lbl">Most wanted</div>` + r.groups.slice(0, r.polls.length ? 2 : 3).map(g => `<div class="sq"><span class="n">▲ ${g.votes}</span><span>${txt(g.lead.text)}</span>${g.lead.answered ? '<span class="sdone">answered</span>' : ''}</div>`).join('') : ''}
         ${pollHtml(r.polls[r.polls.length - 1]?.poll, true)}
       </section>
       <aside class="join own">${qrSvg(home)}<div class="lbl"><b>Run your own room</b><br/>Scan. It takes 10 seconds.</div></aside>${back}</div>`;
