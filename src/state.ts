@@ -163,7 +163,7 @@ export function apply(s: RoomState, m: RoomMsg): RoomState {
       s.removed.add(uid);
       s.feed = s.feed.filter(f => f.senderId !== uid);
       for (const [id, q] of s.questions) { if (q.authorId === uid) s.questions.delete(id); else q.voters.delete(uid); }
-      for (const p of s.polls.values()) p.votes.delete(uid);
+      for (const p of s.polls.values()) { p.votes.delete(uid); p.round1?.delete(uid); }
       s.people.delete(uid);
       s.lost.delete(uid);
       if (s.focus && !s.questions.has(s.focus)) s.focus = null;

@@ -182,3 +182,12 @@ test('recap grouping keeps same-topic questions apart', () => {
   assert.equal(r.groups.length, 3);
   assert.deepEqual(r.groups.find(g => g.lead.id === 'q2')!.others.map(q => q.id), ['q4']);
 });
+
+test('second take forgets a removed person in both rounds', () => {
+  const s = build('host', [m('poll', 'host', { question: 'A or B?', options: ['A', 'B'] }, 'p1'),
+    m('pollvote', 'a', { pollId: 'p1', option: 0 }), m('pollvote', 'b', { pollId: 'p1', option: 0 }),
+    m('poll', 'host', { retake: 'p1' }), m('pollvote', 'b', { pollId: 'p1', option: 1 }), m('remove', 'host', { userId: 'b' })]);
+  const p = s.polls.get('p1')!;
+  assert.equal(p.round1!.size, 1);
+  assert.equal(changedMinds(p), 0);
+});
