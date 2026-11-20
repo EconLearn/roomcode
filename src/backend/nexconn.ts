@@ -11,11 +11,11 @@ import { codeFromGroupId, groupIdFor, type Backend, type RoomInfo, type Status }
 const TEXT = 'RC:TxtMsg';
 const CUSTOM: Record<Exclude<MsgType, 'chat'>, string> = {
   question: 'RMC:Q', join: 'RMC:Join', vote: 'RMC:Vote', answered: 'RMC:Ans', poll: 'RMC:Poll', pollvote: 'RMC:PVote', pin: 'RMC:Pin', close: 'RMC:Close',
-  hide: 'RMC:Hide', remove: 'RMC:Remove',
+  hide: 'RMC:Hide', remove: 'RMC:Remove', focus: 'RMC:Focus', signal: 'RMC:Signal',
 };
 const TYPE_OF = new Map<string, MsgType>(Object.entries(CUSTOM).map(([k, v]) => [v, k as MsgType]));
 // Votes are persisted (late joiners need them) but do not bump unread counts.
-const QUIET = new Set(['RMC:Vote', 'RMC:PVote', 'RMC:Join', 'RMC:Hide', 'RMC:Remove']);
+const QUIET = new Set(['RMC:Vote', 'RMC:PVote', 'RMC:Join', 'RMC:Hide', 'RMC:Remove', 'RMC:Focus', 'RMC:Signal']);
 // Group channels have no typing API on Web, so typing is a transient status message.
 const TYPING = 'RMC:Typing';
 // The host's snapshot of the room for late joiners: also transient, never stored.
@@ -120,6 +120,7 @@ export class NexconnBackend implements Backend {
   }
 
   async disconnect() { await NCEngine.disconnect(); }
+  setName(name: string) { this.name = name; }
 
   createRoom(title: string) { return api<RoomInfo>('rooms', { device: this.device, title }); }
   joinRoom(code: string) { return api<RoomInfo>('join', { device: this.device, code }); }
@@ -166,7 +167,7 @@ export class NexconnBackend implements Backend {
     const params: SendMessageParams<any> = type === 'chat'
       ? new SendTextMessageParams({ text: String(body.text), senderUserInfo: { userId: this.userId, name: this.name } })
       : new SendMessageParams({ ...body, n: this.name }, CUSTOM[type]);
-    if (type === 'vote' || type === 'pollvote' || type === 'join') params.disableNotification = true;
+    if (type === 'vote' || type === 'pollvote' || type === 'join' || type === 'signal' || type === 'focus') params.disableNotification = true;
     const r = await channel.sendMessage(params);
     if (!r.isOk || !r.data) throw new Error(`Message not sent (code ${r.code}).`);
     return toRoomMsg(r.data)!;

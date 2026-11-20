@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { build, rankedQuestions, pollTally, latestOpenPoll, recap, type RoomMsg } from '../src/state.ts';
+import { build, rankedQuestions, pollTally, latestOpenPoll, recap, summarize, lookalikes, changedMinds, type RoomMsg } from '../src/state.ts';
 
 let t = 0;
 const m = (type: RoomMsg['type'], senderId: string, body: Record<string, any>, id = `m${++t}`): RoomMsg =>
@@ -118,4 +118,56 @@ test('remove hides everything a person posted, their votes, and anything later',
   assert.equal(s.feed.some(f => f.senderId === 'troll'), false);
   assert.equal(s.people.has('troll'), false);
   assert.equal(s.removed.has('host'), false);
+});
+
+test('answering now: host only, shown first, cleared when answered', () => {
+  const base = [m('question', 'a', { text: 'first one' }, 'q1'), m('question', 'b', { text: 'second one' }, 'q2'), m('vote', 'x', { qid: 'q1' })];
+  let s = build('host', [...base, m('focus', 'b', { qid: 'q2' })]);
+  assert.equal(s.focus, null);
+  s = build('host', [...base, m('focus', 'host', { qid: 'q2' })]);
+  assert.equal(s.focus, 'q2');
+  assert.deepEqual(rankedQuestions(s).map(q => q.id), ['q2', 'q1']);
+  s = build('host', [...base, m('focus', 'host', { qid: 'q2' }), m('answered', 'host', { qid: 'q2' })]);
+  assert.equal(s.focus, null);
+});
+
+test("I'm lost: one per person, toggles, only the host clears, removed people drop out", () => {
+  let s = build('host', [m('signal', 'a', { on: true }), m('signal', 'a', { on: true }), m('signal', 'b', { on: true }), m('signal', 'c', { on: true }), m('signal', 'c', { on: false })]);
+  assert.equal(s.lost.size, 2);
+  s = build('host', [m('signal', 'a', { on: true }), m('signal', 'b', { clear: true })]);
+  assert.equal(s.lost.size, 1);
+  s = build('host', [m('signal', 'a', { on: true }), m('signal', 'host', { clear: true })]);
+  assert.equal(s.lost.size, 0);
+  s = build('host', [m('signal', 'a', { on: true }), m('remove', 'host', { userId: 'a' })]);
+  assert.equal(s.lost.size, 0);
+});
+
+test('second take: counts who changed their mind; guests cannot start it', () => {
+  const votes = [m('poll', 'host', { question: 'A or B?', options: ['A', 'B'] }, 'p1'),
+    m('pollvote', 'a', { pollId: 'p1', option: 0 }), m('pollvote', 'b', { pollId: 'p1', option: 0 }), m('pollvote', 'c', { pollId: 'p1', option: 1 })];
+  let s = build('host', [...votes, m('poll', 'a', { retake: 'p1' }), m('pollvote', 'a', { pollId: 'p1', option: 1 })]);
+  assert.equal(s.polls.get('p1')!.round1, null);
+  s = build('host', [...votes, m('poll', 'host', { retake: 'p1' }), m('pollvote', 'a', { pollId: 'p1', option: 1 }), m('pollvote', 'c', { pollId: 'p1', option: 1 }), m('pollvote', 'd', { pollId: 'p1', option: 0 })]);
+  const p = s.polls.get('p1')!;
+  assert.equal(changedMinds(p), 1);
+  assert.equal(p.round1!.size, 3);
+  assert.equal(s.polls.size, 1);
+  assert.match(recap('T', 'ABCDE', s), /1 of 3 changed their mind/);
+});
+
+test('similar questions: offered while typing, grouped in the recap', () => {
+  const s = build('host', [
+    m('question', 'a', { text: 'Will the slides be shared after the talk?' }, 'q1'),
+    m('question', 'b', { text: 'Are the slides shared afterwards?' }, 'q2'),
+    m('question', 'c', { text: 'How do you keep the queue fair?' }, 'q3'),
+    m('vote', 'x', { qid: 'q1' }),
+  ]);
+  assert.deepEqual(lookalikes(s, 'can you share the slides').map(q => q.id), ['q1', 'q2']);
+  assert.deepEqual(lookalikes(s, 'what time is lunch'), []);
+  const r = summarize(s);
+  assert.equal(r.groups.length, 2);
+  assert.equal(r.groups[0].lead.id, 'q1');
+  assert.deepEqual(r.groups[0].others.map(q => q.id), ['q2']);
+  assert.equal(r.groups[0].votes, 3);
+  assert.match(recap('T', 'ABCDE', s), /also asked: Are the slides shared afterwards\?/);
 });

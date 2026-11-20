@@ -53,6 +53,7 @@ export class MockBackend implements Backend {
     return this.userId;
   }
   async disconnect() { this.statusCbs.forEach(cb => cb('offline')); }
+  setName(name: string) { this.name = name; }
 
   async createRoom(title: string): Promise<RoomInfo> {
     const s = load();

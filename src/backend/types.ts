@@ -17,6 +17,8 @@ export interface Backend {
   // `device` is this browser's secret; the backend returns the user ID derived from it.
   connect(device: string, name: string): Promise<string>;
   disconnect(): Promise<void>;
+  // A changed nickname applies to everything sent from now on.
+  setName(name: string): void;
   createRoom(title: string): Promise<RoomInfo>;
   joinRoom(code: string): Promise<RoomInfo>;
   history(code: string): Promise<RoomMsg[]>;

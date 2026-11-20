@@ -4,7 +4,7 @@ import { MockBackend } from './backend/mock.ts';
 import { clean } from './filter.ts';
 import { normalizeCode, type Backend, type RoomInfo, type Status } from './backend/types.ts';
 import {
-  build, apply, rankedQuestions, pollTally, latestOpenPoll, recap, isQuiet, LIMITS,
+  build, apply, rankedQuestions, pollTally, latestOpenPoll, recap, summarize, lookalikes, changedMinds, LIMITS,
   type RoomState, type RoomMsg, type Question, type Poll,
 } from './state.ts';
 
@@ -36,6 +36,8 @@ const ADJ = ['Quiet', 'Bright', 'Swift', 'Curious', 'Calm', 'Bold', 'Lucky', 'Cl
 const ANIMAL = ['Otter', 'Falcon', 'Panda', 'Fox', 'Heron', 'Lynx', 'Koala', 'Orca', 'Wren', 'Badger'];
 const suggestName = () => `${ADJ[Math.floor(Math.random() * ADJ.length)]} ${ANIMAL[Math.floor(Math.random() * ANIMAL.length)]}`;
 let myName = store.get('roomcode:name') || '';
+// Larger text: one switch in the room menu, remembered on this device.
+if (store.get('roomcode:big') === '1') document.documentElement.classList.add('big');
 
 // ---------- backend: real Nexconn when an App Key is configured, else offline mock ----------
 const APP_KEY = import.meta.env.VITE_NEXCONN_APP_KEY as string | undefined;
@@ -47,7 +49,7 @@ async function getBackend(): Promise<Backend> {
     const { NexconnBackend } = await import('./backend/nexconn.ts');
     backend = new NexconnBackend(APP_KEY, (import.meta.env.VITE_NEXCONN_AREA as string) || 'SG');
   } else backend = new MockBackend();
-  backend.onStatus(s => { status = s; renderTop(); });
+  backend.onStatus(onStatus);
   backend.onMessage(onIncoming);
   backend.onSnapshot(onSnapshot);
   backend.onTyping((code, ids) => { if (room && code === room.info.code) { typingIds = ids; renderTyping(); } });
@@ -91,6 +93,8 @@ const ICON = {
   qr: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3M21 14v7h-7"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
   pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5M9 3h6l-1 6 4 4H6l4-4z"/></svg>',
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+  hand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1 1-1.1 1.8M12 17h.01"/></svg>',
 };
 
 // ---------- sheets (modals) ----------
@@ -109,23 +113,24 @@ function sheet(html: string, onMount?: (el: HTMLElement, close: () => void) => v
 }
 
 function askName(): Promise<void> {
-  if (myName) return Promise.resolve();
   return new Promise(resolve => {
-    const suggestion = suggestName();
+    const suggestion = myName || suggestName();
     sheet(`
       <h2>What should the room call you?</h2>
       <p class="muted">Only this nickname is shared. No email, no account.</p>
       <form id="nf"><input class="field" id="nick" maxlength="${LIMITS.name}" value="${esc(suggestion)}" autocomplete="nickname" aria-label="Nickname" />
-      <div class="row"><button class="btn accent block" type="submit">Join the room</button></div></form>`,
+      <div class="row"><button class="btn accent block" type="submit">Save</button></div></form>`,
       (el, close) => {
         const input = $<HTMLInputElement>('#nick', el)!; input.select();
         $<HTMLFormElement>('#nf', el)!.onsubmit = e => {
           e.preventDefault();
           myName = input.value.trim().slice(0, LIMITS.name) || suggestion;
           store.set('roomcode:name', myName);
+          backend?.setName(myName);
+          if (room) room.state.people.set(ME, myName);
           close(); resolve();
         };
-      }, false);
+      });
   });
 }
 
@@ -136,8 +141,8 @@ function renderHome(prefill = '', error = '') {
   app.innerHTML = `
   <main class="home">
     <div class="logo"><span class="logo-mark"><i></i><i></i><i></i><i></i></span>Roomcode</div>
-    <h1>A live chat for <em>any room</em> you're in.</h1>
-    <p class="lede">Scan the code, ask questions, vote and run polls. No app, no account. Rooms close after 24 hours.</p>
+    <h1>Hear from <em>the whole room</em>, not just the loudest voice.</h1>
+    <p class="lede">Show a QR. Everyone asks, votes and answers polls from their phone, in their own language, with or without their name. No app, no account.</p>
     <form id="jf">
       <input class="code-input" id="code" inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false"
         maxlength="5" placeholder="CODE" value="${esc(prefill)}" aria-label="Room code" />
@@ -149,7 +154,7 @@ function renderHome(prefill = '', error = '') {
     <ol class="how">
       <li><b>1</b><span><strong>Start a room</strong> for your class, club meeting or event.</span></li>
       <li><b>2</b><span><strong>Show the QR</strong> on the board. Everyone joins from their phone in seconds.</span></li>
-      <li><b>3</b><span><strong>Everyone gets a voice.</strong> The best questions get voted to the top. Quick polls show what the room thinks.</span></li>
+      <li><b>3</b><span><strong>Everyone gets a voice.</strong> The best questions get voted to the top, polls show what the room thinks, and one quiet tap tells you who is lost.</span></li>
     </ol>
     <p class="foot"><a href="#/r/${FEEDBACK_CODE}">Ideas or problems? Tell us in room ${FEEDBACK_CODE}</a><br/>Built on the Nexconn Chat SDK. <span class="mode-pill">${APP_KEY && !forceMock ? 'Live' : 'Offline demo: rooms are shared between tabs of this browser'}</span></p>
   </main>`;
@@ -190,8 +195,8 @@ function startRoomFlow() {
 }
 
 // ---------- room ----------
-type Tab = 'chat' | 'questions' | 'poll';
-interface Room { info: RoomInfo; state: RoomState; msgs: RoomMsg[]; tab: Tab; mode: 'chat' | 'question'; anon: boolean; }
+type Tab = 'chat' | 'questions' | 'poll' | 'recap';
+interface Room { info: RoomInfo; state: RoomState; msgs: RoomMsg[]; tab: Tab; anon: boolean; }
 let room: Room | null = null;
 let typingIds: string[] = [];
 const isHost = () => !!room && room.info.ownerId === ME;
@@ -202,13 +207,16 @@ const FEEDBACK_CODE = 'FEEDB';
 async function openRoom(code: string, screen: boolean) {
   app.innerHTML = `<div class="empty" style="padding-top:30vh"><b>Joining ${esc(code)}…</b></div>`;
   try {
-    if (!screen) await askName();
+    // No name prompt: a guest gets a friendly nickname and can change it from the room.
+    if (!screen && !myName) { myName = suggestName(); store.set('roomcode:name', myName); }
     const b = await ensureConnected();
     const info = await b.joinRoom(code);
     const msgs = await b.history(code);
-    room = { info, msgs, state: build(info.ownerId, msgs), tab: 'chat', mode: 'chat', anon: false };
+    room = { info, msgs, state: build(info.ownerId, msgs), tab: 'questions', anon: false };
     if (!screen) room.state.people.set(ME, myName);
     if (Date.now() - info.createdAt > ROOM_TTL && code !== FEEDBACK_CODE) room.state.closed = true;
+    if (room.state.closed) room.tab = 'recap';
+    if (code === FEEDBACK_CODE) room.tab = 'chat';
     document.title = `${info.title} · Roomcode`;
     screen ? renderScreen() : renderRoom();
     // Say hello once per room, so everyone sees who arrived and the count is live.
@@ -225,19 +233,20 @@ async function openRoom(code: string, screen: boolean) {
 function onIncoming(code: string, m: RoomMsg) {
   if (!room || room.info.code !== code || room.msgs.some(x => x.id === m.id)) return;
   room.msgs.push(m);
-  const before = room.state.feed.length;
+  const before = room.state.feed.length, wasClosed = room.state.closed;
   apply(room.state, m);
   typingIds = typingIds.filter(id => id !== m.senderId);
   if (m.type === 'join' && m.senderId !== ME && isHost()) queueSnapshot();
   if ($('.screen')) return renderScreen();
-  renderTop(); renderPin(); renderTabs(); renderPane(room.state.feed.length > before && m.senderId !== ME); renderTyping(); renderComposer(false);
+  if (room.state.closed && !wasClosed) { room.tab = 'recap'; return renderRoom(); } // everyone lands on the recap
+  renderLive(room.state.feed.length > before && m.senderId !== ME);
 }
 
 // ---------- snapshots for late joiners ----------
 // New group members may not be able to read history from before they joined (a
 // Nexconn console setting). So when someone new joins, the host's open screen (phone
 // or projector) sends the room so far as one transient message.
-const MSG_TYPES = new Set(['chat', 'question', 'vote', 'answered', 'poll', 'pollvote', 'pin', 'close', 'join', 'hide', 'remove']);
+const MSG_TYPES = new Set(['chat', 'question', 'vote', 'answered', 'poll', 'pollvote', 'pin', 'close', 'join', 'hide', 'remove', 'focus', 'signal']);
 let snapTimer: number | undefined;
 function queueSnapshot() {
   clearTimeout(snapTimer);
@@ -264,32 +273,118 @@ function onSnapshot(code: string, senderId: string, list: RoomMsg[]) {
   room.state = build(room.info.ownerId, room.msgs);
   if (!$('.screen')) room.state.people.set(ME, myName);
   if (Date.now() - room.info.createdAt > ROOM_TTL && code !== FEEDBACK_CODE) room.state.closed = true;
+  if (room.state.closed && room.tab !== 'recap' && !$('#box')?.matches(':focus')) room.tab = 'recap';
   $('.screen') ? renderScreen() : renderRoom();
 }
 
+// People who have said hello in this room (the projector tab is not a person).
+const peopleCount = () => room ? Math.max(room.state.people.size, 1) : 0;
+const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+const wide = () => matchMedia('(min-width: 980px)').matches;
+
+// ---------- connection: a calm banner, and a catch-up after every reconnect ----------
+let wasOnline = false;
+let bannerTimer: number | undefined;
+function onStatus(s: Status) {
+  const back = s === 'connected' && status !== 'connected' && wasOnline;
+  status = s;
+  if (s === 'connected') wasOnline = true;
+  renderTop();
+  clearTimeout(bannerTimer);
+  // Wait a moment before saying anything: most drops heal by themselves.
+  bannerTimer = window.setTimeout(renderBanner, s === 'connected' ? 0 : 1500);
+  if (back && room && connected) void catchUp();
+}
+function renderBanner() {
+  const el = $('#banner'); if (!el) return;
+  el.innerHTML = wasOnline && status !== 'connected'
+    ? `<div class="banner" role="status">${status === 'connecting' ? 'Reconnecting…' : 'You are offline.'} Posts will show up again when you are back.</div>` : '';
+}
+async function catchUp() {
+  if (!room) return;
+  try {
+    const msgs = await backend.history(room.info.code);
+    const have = new Set(room.msgs.map(m => m.id));
+    const fresh = msgs.filter(m => !have.has(m.id));
+    if (!fresh.length) return;
+    room.msgs.push(...fresh);
+    room.state = build(room.info.ownerId, room.msgs);
+    if (!$('.screen')) room.state.people.set(ME, myName);
+    if ($('.screen')) renderScreen(); else renderLive(false);
+  } catch { /* the next message or reconnect will try again */ }
+}
+
 function renderRoom() {
+  const host = isHost();
   app.innerHTML = `
-  <div class="room">
-    <header class="top" id="top"></header>
-    <div id="pin"></div>
-    <nav class="tabs" id="tabs" role="tablist"></nav>
-    <section class="pane" id="pane" aria-live="polite"></section>
-    <div class="typing" id="typing"></div>
-    <footer id="composer"></footer>
+  <div class="room${host ? ' hosting' : ''}">
+    ${host ? '<aside class="dash" id="dash" aria-label="Host controls"></aside>' : ''}
+    <div class="col">
+      <header class="top" id="top"></header>
+      <div id="banner"></div>
+      <div id="pin"></div>
+      <nav class="tabs" id="tabs" role="tablist"></nav>
+      <section class="pane" id="pane" aria-live="polite"></section>
+      <div class="typing" id="typing"></div>
+      <footer id="composer"></footer>
+    </div>
   </div>`;
-  renderTop(); renderPin(); renderTabs(); renderPane(true); renderTyping(); renderComposer(true);
+  renderBanner(); renderLive(true, true);
   if (matchMedia('(pointer: fine)').matches) $<HTMLTextAreaElement>('#box')?.focus();
+}
+
+// Re-renders every live part of the room; the composer keeps what the user is typing.
+function renderLive(stickToBottom: boolean, fullComposer = false) {
+  renderTop(); renderDash(); renderPin(); renderTabs(); renderPane(stickToBottom); renderTyping(); renderComposer(fullComposer);
 }
 
 function renderTop() {
   const el = $('#top'); if (!el || !room) return;
-  const n = Math.max(room.state.people.size, room.info.memberCount ?? 0);
+  const n = peopleCount(), lost = room.state.lost.size;
   el.innerHTML = `
     <a class="icon-btn" href="#/" aria-label="Leave room">${ICON.back}</a>
     <div class="title"><b>${txt(room.info.title)}</b>
-      <small><span class="dot ${status}"></span>${status === 'connected' ? `${n} ${n === 1 ? 'person' : 'people'}` : status === 'connecting' ? 'Connecting…' : 'Offline'}${isHost() ? ' · you host' : ''}</small></div>
+      <small><span class="dot ${status}"></span>${status === 'connected' ? plural(n, 'person', 'people') : status === 'connecting' ? 'Connecting…' : 'Offline'}${isHost() ? ' · you host' : ''}</small></div>
+    ${isHost() && lost && !room.state.closed ? `<button class="lost-chip" data-act="lost" aria-label="${lost} lost. Tap for details">${ICON.hand}${lost} lost</button>` : ''}
     <button class="code-chip" data-act="share" aria-label="Show join code">${esc(room.info.code)}</button>
     <button class="icon-btn" data-act="menu" aria-label="Room menu">${ICON.more}</button>`;
+}
+
+// The host's side panel on a laptop: the join code, the room's numbers and every control in one place.
+function renderDash() {
+  const el = $('#dash'); if (!el || !room) return;
+  const s = room.state, r = summarize(s), closed = s.closed, lost = s.lost.size, n = peopleCount();
+  const key = `${room.info.code}|${closed}`;
+  if (el.dataset.key !== key) {
+    el.dataset.key = key;
+    el.innerHTML = `
+      <div class="dash-card join-card">
+        <span class="tag q">You host this room</span>
+        <div class="dash-qr">${qrSvg(joinUrl(room.info.code))}</div>
+        <div class="dash-code">${esc(room.info.code)}</div>
+        <div class="dash-url">${esc(location.host)}</div>
+        <div class="row"><button class="btn ghost small" data-act="copylink">Copy link</button><button class="btn small" data-act="screen">Projector view</button></div>
+      </div>
+      <div class="dash-card"><dl class="stats" id="dstats"></dl><div id="dlost"></div></div>
+      <div class="dash-card dash-actions">
+        ${closed ? '' : '<button class="btn accent block" data-act="newpoll">Start a poll</button><button class="btn ghost block" data-act="pinmsg">Pin an announcement</button>'}
+        <button class="btn ghost block" data-act="recap">Copy recap</button>
+        ${closed ? '<button class="btn accent block" data-act="startown">Start a new room</button>' : '<button class="btn ghost block danger" data-act="end">End room for everyone</button>'}
+      </div>
+      <p class="muted small dash-tip">Tap ••• on any post to hide it or remove the person. <a href="./guide.html" target="_blank" rel="noopener">One-page guide</a></p>`;
+  }
+  $('#dstats', el)!.innerHTML = ([['People', n], ['Open', r.open], ['Answered', r.answered], ['Votes', r.votes + r.pollVotes]] as [string, number][])
+    .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
+  $('#dlost', el)!.innerHTML = closed ? '' : lostMeter(lost, n);
+}
+
+// "I'm lost": how many people privately said they are not following. Counted, never named.
+function lostMeter(lost: number, people: number) {
+  const guests = Math.max(1, people - 1), pct = Math.min(100, Math.round(lost * 100 / guests));
+  return `<div class="lost-meter${lost ? ' on' : ''}"><div class="lm-row"><span>${ICON.hand}<b>${lost ? `${plural(lost, 'person', 'people')} lost` : 'Nobody is lost'}</b></span>
+      ${lost ? '<button class="link-btn" data-act="clearlost">Clear after re-explaining</button>' : ''}</div>
+    <div class="lm-bar"><i style="width:${pct}%"></i></div>
+    <p class="muted small">${lost ? 'No names are shown. Slow down or take a question.' : 'Guests can tap “I’m lost” privately. Only you see the count.'}</p></div>`;
 }
 
 function renderPin() {
@@ -304,34 +399,61 @@ function renderTabs() {
   const voted = poll?.votes.has(ME);
   const tab = (id: Tab, label: string, badge = '') =>
     `<button class="tab" role="tab" data-tab="${id}" aria-selected="${room!.tab === id}">${label}${badge}</button>`;
-  el.innerHTML = tab('chat', 'Chat') +
+  el.innerHTML = (room.state.closed ? tab('recap', 'Recap') : '') +
     tab('questions', 'Questions', open ? ` <span class="badge">${open}</span>` : '') +
-    tab('poll', 'Polls', poll && !voted ? ' <span class="badge">1</span>' : '');
+    tab('chat', 'Chat') +
+    tab('poll', 'Polls', poll && !voted && !room.state.closed ? ' <span class="badge">1</span>' : '');
 }
 
 function questionCard(q: Question, rank = -1) {
-  const mine = q.voters.has(ME);
+  const mine = q.voters.has(ME), s = room!.state;
   const name = q.anonymous ? 'Anonymous' : txt(q.authorName);
-  return `<article class="qcard${q.answered ? ' answered' : ''}${rank === 0 && !q.answered && q.voters.size > 1 ? ' top1' : ''}">
-    <button class="vote" data-vote="${esc(q.id)}" aria-pressed="${mine}" aria-label="Upvote, ${q.voters.size} votes" ${room!.state.closed ? 'disabled' : ''}>${ICON.up}${q.voters.size}</button>
-    <div class="qbody"><div class="qtext">${txt(q.text)}</div>${trLine(q.id)}
-      <div class="qmeta">${q.answered ? '<span class="tag ok">Answered</span>' : '<span class="tag q">Question</span>'}<span>${name} · ${ago(q.sentTime)}</span>
-      ${isHost() && !room!.state.closed ? `<button class="link-btn" data-answer="${esc(q.id)}" data-val="${!q.answered}">${q.answered ? 'Reopen' : 'Mark answered'}</button>` : ''}${modBtn(q.id, q.authorId)}</div></div>
+  const focus = s.focus === q.id;
+  const hostCtl = isHost() && !s.closed ? `<div class="qctl">
+      ${q.answered ? '' : `<button class="chip-btn${focus ? ' on' : ''}" data-focus="${esc(focus ? '' : q.id)}">${focus ? 'Stop answering' : 'Answer now'}</button>`}
+      <button class="chip-btn" data-answer="${esc(q.id)}" data-val="${!q.answered}">${q.answered ? 'Reopen' : focus ? 'Done, next' : 'Mark answered'}</button>
+      ${q.answered ? '' : `<button class="chip-btn" data-tovote="${esc(q.id)}" title="Turn this question into a Yes / No / Not sure poll">Put to a vote</button>`}${modBtn(q.id, q.authorId)}</div>` : '';
+  return `<article class="qcard${q.answered ? ' answered' : ''}${focus ? ' focus' : rank === 0 && !q.answered && q.voters.size > 1 ? ' top1' : ''}">
+    <button class="vote" data-vote="${esc(q.id)}" aria-pressed="${mine}" aria-label="Upvote, ${q.voters.size} votes" ${s.closed ? 'disabled' : ''}>${ICON.up}${q.voters.size}</button>
+    <div class="qbody">${focus ? '<div class="now">Answering now</div>' : ''}<div class="qtext">${txt(q.text)}</div>${trLine(q.id)}
+      <div class="qmeta">${q.answered ? '<span class="tag ok">Answered</span>' : ''}<span>${name} · ${ago(q.sentTime)}${q.authorId === ME ? ' · you' : ''}</span></div>${hostCtl}</div>
   </article>`;
 }
 
 function pollCard(p: Poll) {
   const { counts, total } = pollTally(p);
   const mine = p.votes.get(ME);
-  const showResults = mine !== undefined || p.closed || isHost();
-  return `<article class="poll"><span class="tag ${p.closed ? '' : 'q'}">${p.closed ? 'Poll closed' : 'Live poll'}</span><h3>${txt(p.question)}</h3>${trLine(p.id)}
+  const over = p.closed || room!.state.closed;
+  const showResults = mine !== undefined || over || isHost();
+  const moved = changedMinds(p), second = !!p.round1;
+  const first = p.round1?.get(ME);
+  return `<article class="poll"><span class="tag ${over ? '' : 'q'}">${over ? 'Final result' : second ? 'Second take' : 'Live poll'}</span><h3>${txt(p.question)}</h3>${trLine(p.id)}
+    ${second && !over && first !== undefined && !isHost() ? `<p class="retake">You said <b>${txt(p.options[first])}</b>. Still think so? Tap to change.</p>` : ''}
     ${p.options.map((o, i) => {
       const pct = total ? Math.round(counts[i] * 100 / total) : 0;
-      return `<button class="opt${mine === i ? ' mine' : ''}" data-poll="${esc(p.id)}" data-opt="${i}" ${p.closed || room!.state.closed ? 'disabled' : ''}>
+      return `<button class="opt${mine === i ? ' mine' : ''}" data-poll="${esc(p.id)}" data-opt="${i}" ${over ? 'disabled' : ''}>
         <div class="fill" style="width:${showResults ? pct : 0}%"></div><span><span>${txt(o)}</span>${showResults ? `<span>${pct}%</span>` : ''}</span></button>`;
     }).join('')}
-    <div class="foot-note"><span>${total} ${total === 1 ? 'vote' : 'votes'}${mine === undefined && !p.closed ? ' · tap to vote' : ''}</span>
-    ${isHost() && !p.closed && !room!.state.closed ? `<button class="link-btn" data-closepoll="${esc(p.id)}">Close poll</button>` : ''}</div></article>`;
+    <div class="foot-note"><span>${plural(total, 'vote')}${over ? '' : mine === undefined ? ' · tap to vote' : ' · tap another to change'}</span>
+    ${isHost() && !over ? `<span class="pctl">${!second && total ? `<button class="link-btn" data-retake="${esc(p.id)}" title="After you have discussed it, let everyone answer again and see who moved">Ask again</button>` : ''}<button class="link-btn" data-closepoll="${esc(p.id)}">Close poll</button></span>` : ''}</div>
+    ${second ? `<div class="moved"><b>${moved}</b> of ${p.round1!.size} changed their mind</div>` : ''}</article>`;
+}
+
+// The recap everyone lands on when the room ends: the numbers, what the room most wanted, poll results.
+function recapView() {
+  const s = room!.state, r = summarize(s);
+  const stats = ([['People', r.people], ['Questions', r.asked], ['Answered', r.answered], ['Votes', r.votes + r.pollVotes]] as [string, number][])
+    .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
+  const groups = r.groups.slice(0, 8).map(g => `<li><span class="rv">${g.votes}</span><div><b>${txt(g.lead.text)}</b>
+      <small>${g.lead.answered ? '<span class="tag ok">Answered</span>' : '<span class="tag">Still open</span>'}${g.others.length ? ` asked ${g.others.length + 1} ways` : ''}</small>
+      ${g.others.map(o => `<p class="also">also: ${txt(o.text)}</p>`).join('')}</div></li>`).join('');
+  return `<article class="recap">
+    <span class="tag">Recap${r.minutes ? ` · ran ${r.minutes} min` : ''}</span><h2>${txt(room!.info.title)}</h2>
+    <dl class="stats">${stats}</dl>
+    ${groups ? `<h3>Most wanted</h3><ol class="rlist">${groups}</ol>` : '<p class="muted">No questions were asked in this room.</p>'}
+    ${r.polls.length ? '<h3>Polls</h3>' + r.polls.map(p => pollCard(p.poll)).join('') : ''}
+    <div class="row"><button class="btn" data-act="recap">Copy recap</button><button class="btn ghost" data-act="dlrecap">Download</button></div>
+  </article>`;
 }
 
 function renderPane(stickToBottom: boolean) {
@@ -339,9 +461,11 @@ function renderPane(stickToBottom: boolean) {
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   const s = room.state;
   let html = '';
-  if (room.tab === 'chat') {
+  if (room.tab === 'recap') {
+    html = recapView();
+  } else if (room.tab === 'chat') {
     let prev = '';
-    const feed = s.feed;
+    const feed = s.feed.filter(m => m.type === 'chat' || m.type === 'join');
     for (let i = 0; i < feed.length; i++) {
       const m = feed[i];
       if (m.type === 'join') {
@@ -353,76 +477,112 @@ function renderPane(stickToBottom: boolean) {
         prev = '';
         continue;
       }
-      if (m.type === 'chat') {
-        const me = m.senderId === ME, cont = prev === m.senderId;
-        const host = m.senderId === s.ownerId ? ' <span class="host">· host</span>' : '';
-        html += `<div class="msg${me ? ' me' : ''}${cont ? ' cont' : ''}"><div class="who">${me ? 'You' : txt(m.senderName)}${host}</div><div class="brow"><div class="bubble">${txt(m.body.text)}${trLine(m.id)}</div>${modBtn(m.id, m.senderId)}</div></div>`;
-        prev = m.senderId;
-      } else {
-        const q = s.questions.get(m.id), p = s.polls.get(m.id);
-        if (q) html += questionCard(q); if (p) html += pollCard(p);
-        prev = '';
-      }
+      const me = m.senderId === ME, cont = prev === m.senderId;
+      const host = m.senderId === s.ownerId ? ' <span class="host">· host</span>' : '';
+      html += `<div class="msg${me ? ' me' : ''}${cont ? ' cont' : ''}"><div class="who">${me ? 'You' : txt(m.senderName)}${host}</div><div class="brow"><div class="bubble">${txt(m.body.text)}${trLine(m.id)}</div>${modBtn(m.id, m.senderId)}</div></div>`;
+      prev = m.senderId;
     }
-    if (isQuiet(s)) html = (isHost() && !s.closed ? hostGuide(true)
-      : `<div class="empty"><b>The room is quiet.</b>${s.removed.has(ME) ? 'You can still read along.' : 'Say hi, or ask the first question.'}</div>`) + html;
+    if (!feed.some(m => m.type === 'chat')) html += `<div class="empty"><b>Side chat</b>${s.removed.has(ME) ? 'You can still read along.' : 'Say hi, share a link, react to the talk. Questions go in the Questions tab so the room can vote on them.'}</div>`;
   } else if (room.tab === 'questions') {
     const qs = rankedQuestions(s);
     html = qs.length ? qs.map((q, i) => questionCard(q, i)).join('')
-      : `<div class="empty"><b>No questions yet.</b>Switch the box below to “Question”. The room votes the best ones to the top.</div>`;
+      : isHost() && !s.closed && !wide() ? hostGuide(true)
+      : `<div class="empty"><b>${s.closed ? 'No questions were asked.' : 'Ask the first question'}</b>${s.closed ? '' : isHost() ? 'Questions appear here as people ask. The room votes the best ones to the top.' : 'Type it in the box below. The room votes the best ones to the top, and you can hide your name.'}</div>`;
   } else {
     const polls = [...s.polls.values()].sort((a, b) => b.sentTime - a.sentTime);
     html = (isHost() && !s.closed ? `<button class="btn accent block" data-act="newpoll" style="margin:4px 0 6px">New poll</button>` : '') +
-      (polls.length ? polls.map(pollCard).join('') : `<div class="empty"><b>No polls yet.</b>${isHost() ? 'Ask the room a quick question with 2 to 6 answers.' : 'The host can start one.'}</div>`);
+      (polls.length ? polls.map(pollCard).join('') : `<div class="empty"><b>No polls yet.</b>${isHost() ? 'Ask the room a quick question with 2 to 6 answers.' : 'When the host starts one, it shows up here.'}</div>`);
   }
   el.innerHTML = html;
-  if (room.tab === 'chat' && !isQuiet(s) && (stickToBottom || nearBottom)) el.scrollTop = el.scrollHeight;
+  if (room.tab === 'chat' && (stickToBottom || nearBottom)) el.scrollTop = el.scrollHeight;
   queueTranslations();
 }
 
 function renderTyping() {
   const el = $('#typing'); if (!el || !room) return;
-  const names = typingIds.map(id => clean(room!.state.people.get(id) || 'Someone')).slice(0, 2);
+  const names = room.tab === 'chat' ? typingIds.map(id => clean(room!.state.people.get(id) || 'Someone')).slice(0, 2) : [];
   el.textContent = names.length ? `${names.join(' and ')}${typingIds.length > 2 ? ' and others' : ''} ${names.length > 1 ? 'are' : 'is'} typing…` : '';
 }
 
+// Voice-to-text for questions and messages, where the browser offers it.
+const Speech: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+let listening: any = null;
+function toggleDictation(box: HTMLTextAreaElement, btn: HTMLElement) {
+  if (listening) { listening.stop(); return; }
+  const rec = new Speech();
+  rec.lang = navigator.language || 'en-US'; rec.interimResults = true; rec.continuous = false;
+  const before = box.value ? box.value.replace(/\s*$/, ' ') : '';
+  rec.onresult = (e: any) => {
+    box.value = (before + Array.from(e.results as ArrayLike<any>).map(r => r[0].transcript).join('')).slice(0, box.maxLength);
+    box.dispatchEvent(new Event('input'));
+  };
+  rec.onerror = (e: any) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Allow the microphone to speak your question'); };
+  rec.onend = () => { listening = null; btn.setAttribute('aria-pressed', 'false'); box.focus(); };
+  try { rec.start(); listening = rec; btn.setAttribute('aria-pressed', 'true'); toast('Listening… speak now'); } catch { listening = null; }
+}
+
+let composerKey = '';
 function renderComposer(full: boolean) {
   const el = $('#composer'); if (!el || !room) return;
-  if (room.state.closed) {
-    el.innerHTML = `<div class="closed-bar"><p>This room has ended.${isHost() ? ' <button class="link-btn" data-act="recap">Copy recap</button>' : ' Thanks for joining.'}</p>
+  const s = room.state;
+  if (s.closed) {
+    composerKey = 'closed';
+    el.innerHTML = `<div class="closed-bar"><p>This room has ended.${isHost() ? '' : ' Thanks for joining.'}</p>
       <button class="btn accent block" data-act="startown">${isHost() ? 'Start a new room' : 'Run your own room. It takes 10 seconds'}</button></div>`;
     return;
   }
-  if (room.state.removed.has(ME)) {
+  if (s.removed.has(ME)) {
+    composerKey = 'removed';
     el.innerHTML = `<div class="closed-bar"><p>The host removed you from this room.</p></div>`;
     return;
   }
-  if (!full && $('#box', el)) return; // keep what the user is typing
-  const q = room.mode === 'question';
+  if (room.tab === 'poll' || room.tab === 'recap') { composerKey = room.tab; el.innerHTML = ''; return; }
+  const q = room.tab === 'questions';
+  const key = `${room.tab}|${myName}|${s.lost.has(ME)}`;
+  if (!full && key === composerKey && $('#box', el)) return; // keep what the user is typing
+  const draft = key.split('|')[0] === composerKey.split('|')[0] ? $<HTMLTextAreaElement>('#box', el)?.value ?? '' : '';
+  const hadFocus = !!$('#box', el)?.matches(':focus');
+  composerKey = key;
+  const lost = s.lost.has(ME);
   el.innerHTML = `<div class="composer">
-    <div><span class="seg" role="group" aria-label="Message type">
-      <button data-mode="chat" aria-pressed="${!q}">Message</button><button data-mode="question" aria-pressed="${q}">Question</button></span>
-      ${q ? `<label class="anon"><input type="checkbox" id="anon" ${room.anon ? 'checked' : ''}/> Hide my name</label>` : ''}</div>
+    <div id="dupes"></div>
+    <div class="who-row"><span>Posting as <button class="link-btn" data-act="rename">${txt(myName)}</button></span>
+      ${q ? `<label class="anon"><input type="checkbox" id="anon" ${room.anon ? 'checked' : ''}/> Hide my name</label>` : ''}
+      ${!isHost() ? `<button class="lost-btn" data-act="imlost" aria-pressed="${lost}" title="Only the host sees how many people tapped this. No names.">${ICON.hand}${lost ? 'You said: lost' : 'I’m lost'}</button>` : ''}</div>
     <form class="compose-row" id="cf">
-      <textarea id="box" rows="1" maxlength="${q ? LIMITS.question : LIMITS.chat}" placeholder="${q ? 'Ask the room a question…' : 'Message the room…'}" aria-label="${q ? 'Question' : 'Message'}"></textarea>
-      <button class="send" id="sendBtn" type="submit" aria-label="Send" disabled>${ICON.send}</button>
+      <textarea id="box" rows="1" maxlength="${q ? LIMITS.question : LIMITS.chat}" placeholder="${q ? 'Ask the room a question…' : 'Message the room…'}" aria-label="${q ? 'Your question' : 'Message'}"></textarea>
+      ${Speech ? `<button class="mic" id="micBtn" type="button" aria-pressed="false" aria-label="Speak instead of typing">${ICON.mic}</button>` : ''}
+      <button class="send" id="sendBtn" type="submit" aria-label="${q ? 'Ask' : 'Send'}" disabled>${q ? 'Ask' : ICON.send}</button>
     </form></div>`;
   const box = $<HTMLTextAreaElement>('#box', el)!, send = $<HTMLButtonElement>('#sendBtn', el)!;
   const grow = () => { box.style.height = 'auto'; box.style.height = Math.min(box.scrollHeight, 140) + 'px'; send.disabled = !box.value.trim(); };
-  box.oninput = () => { grow(); if (box.value.trim()) backend.sendTyping(room!.info.code); };
+  const dupes = () => {
+    const d = $('#dupes', el)!;
+    const similar = q ? lookalikes(room!.state, box.value).filter(x => x.authorId !== ME && !x.voters.has(ME)) : [];
+    d.innerHTML = similar.length ? `<div class="dupes"><b>Already asked? Vote for it instead.</b>${similar.map(x =>
+      `<button type="button" data-dupe="${esc(x.id)}"><span>${txt(x.text)}</span><i>${ICON.up}${x.voters.size}</i></button>`).join('')}</div>` : '';
+  };
+  box.oninput = () => { grow(); dupes(); if (box.value.trim() && !q) backend.sendTyping(room!.info.code); };
   box.onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); $<HTMLFormElement>('#cf', el)!.requestSubmit(); } };
   $<HTMLInputElement>('#anon', el)?.addEventListener('change', e => { room!.anon = (e.target as HTMLInputElement).checked; });
+  const mic = $('#micBtn', el); if (mic) mic.onclick = () => toggleDictation(box, mic);
+  $('#dupes', el)!.addEventListener('click', async e => {
+    const id = (e.target as HTMLElement).closest<HTMLElement>('[data-dupe]')?.dataset.dupe; if (!id) return;
+    box.value = ''; grow(); dupes();
+    try { await sendAndApply('vote', { qid: id, up: true }); toast('Voted for it instead. Good call.'); } catch (err) { toast((err as Error).message); }
+  });
   $<HTMLFormElement>('#cf', el)!.onsubmit = async e => {
     e.preventDefault();
     const text = box.value.trim(); if (!text || !room) return;
-    box.value = ''; grow();
-    const asQuestion = room.mode === 'question';
+    box.value = ''; grow(); dupes();
     try {
-      await sendAndApply(asQuestion ? 'question' : 'chat', asQuestion ? { text, anonymous: room.anon } : { text });
-      if (asQuestion) { toast('Question posted. Others can vote it up.'); }
+      await sendAndApply(q ? 'question' : 'chat', q ? { text, anonymous: room.anon } : { text });
+      if (q) toast('Asked. The room can vote it up.');
     } catch (err) { box.value = text; grow(); toast((err as Error).message); }
     box.focus();
   };
+  if (draft) { box.value = draft; grow(); dupes(); }
+  if (hadFocus) box.focus();
 }
 
 async function sendAndApply(type: RoomMsg['type'], body: Record<string, any>) {
@@ -432,18 +592,26 @@ async function sendAndApply(type: RoomMsg['type'], body: Record<string, any>) {
   onIncoming(code, m);
 }
 
+async function endRoom() {
+  if (!room || !confirm('End this room? Nobody will be able to post after this, and everyone sees the recap.')) return;
+  await sendAndApply('close', {}).catch(err => toast(err.message));
+  backend.moderate(room.info.code, 'close').catch(() => { /* the room view already ignores later posts */ });
+}
+
 // One delegated click handler for the whole room view.
 app.addEventListener('click', async e => {
-  const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act],[data-tab],[data-mode],[data-vote],[data-answer],[data-poll],[data-closepoll],[data-mod]');
+  const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act],[data-tab],[data-focus],[data-tovote],[data-retake],[data-vote],[data-answer],[data-poll],[data-closepoll],[data-mod]');
   if (!t || !room) return;
   const d = t.dataset;
   try {
-    if (d.tab) { room.tab = d.tab as Tab; renderTabs(); renderPane(true); }
-    else if (d.mode) {
-      const draft = $<HTMLTextAreaElement>('#box')?.value ?? '';
-      room.mode = d.mode as Room['mode']; renderComposer(true);
-      const box = $<HTMLTextAreaElement>('#box')!; box.value = draft; box.dispatchEvent(new Event('input')); box.focus();
+    if (d.tab) { room.tab = d.tab as Tab; renderTabs(); renderPane(true); renderTyping(); renderComposer(false); }
+    else if (d.focus !== undefined) { await sendAndApply('focus', { qid: d.focus }); }
+    else if (d.tovote) {
+      const q = room.state.questions.get(d.tovote); if (!q) return;
+      await sendAndApply('poll', { question: q.text.slice(0, LIMITS.pollQuestion), options: ['Yes', 'No', 'Not sure'] });
+      room.tab = 'poll'; renderLive(true); toast('Poll started from the question');
     }
+    else if (d.retake) { await sendAndApply('poll', { retake: d.retake }); toast('Second take: everyone can answer again'); }
     else if (d.vote) { const q = room.state.questions.get(d.vote)!; await sendAndApply('vote', { qid: d.vote, up: !q.voters.has(ME) }); }
     else if (d.answer) { await sendAndApply('answered', { qid: d.answer, answered: d.val === 'true' }); }
     else if (d.poll) { await sendAndApply('pollvote', { pollId: d.poll, option: Number(d.opt) }); }
@@ -454,6 +622,19 @@ app.addEventListener('click', async e => {
     else if (d.act === 'menu') showMenu();
     else if (d.act === 'newpoll') showNewPoll();
     else if (d.act === 'recap') copyRecap();
+    else if (d.act === 'dlrecap') downloadRecap();
+    else if (d.act === 'pinmsg') showPin();
+    else if (d.act === 'end') await endRoom();
+    else if (d.act === 'copylink') { const u = joinUrl(room.info.code); try { await navigator.clipboard.writeText(u); toast('Link copied'); } catch { toast(u); } }
+    else if (d.act === 'rename') { await askName(); renderComposer(true); toast(`You're now ${myName}`); }
+    else if (d.act === 'imlost') {
+      const on = !room.state.lost.has(ME);
+      await sendAndApply('signal', { on });
+      toast(on ? 'The host can see that someone is lost. Not who.' : 'Glad you are back on track');
+    }
+    else if (d.act === 'clearlost') { await sendAndApply('signal', { clear: true }); toast('Cleared'); }
+    else if (d.act === 'lost') sheet(`<h2>Who is lost?</h2>${lostMeter(room.state.lost.size, peopleCount())}<div class="row"><button class="btn" data-close>Close</button></div>`,
+      el => el.addEventListener('click', async e => { if ((e.target as HTMLElement).closest('[data-act="clearlost"]')) { await sendAndApply('signal', { clear: true }); document.querySelector('.scrim')?.remove(); } }));
     else if (d.act === 'startown') { location.hash = '#/'; setTimeout(startRoomFlow, 50); }
   } catch (err) { toast((err as Error).message); }
 });
@@ -461,19 +642,19 @@ app.addEventListener('click', async e => {
 // The host's playbook. Shown in an empty room and from the menu.
 const GUIDE_STEPS: [string, string, string][] = [
   ['0:00', 'Put the code on the board', 'Tap <b>Projector view</b> (or the code chip) and show it on the screen.'],
-  ['0:01', 'Say one line', '“Scan this, pick a nickname. Ask anything. You can hide your name.”'],
-  ['0:02', 'Let questions come in', 'The room votes the best ones to the top. Answer them out loud, then tap <b>Mark answered</b>.'],
+  ['0:01', 'Say one line', '“Scan this and ask anything. You can hide your name. If I lose you, tap I’m lost.”'],
+  ['0:02', 'Let questions come in', 'The room votes the best ones to the top. Tap <b>Answer now</b> to put one on every screen, then <b>Done, next</b>.'],
   ['0:06', 'Run a quick poll', 'Polls tab → <b>New poll</b>, 2 to 4 answers. Results move live on the projector.'],
   ['0:09', 'Pin the takeaway', 'Menu → <b>Pin an announcement</b>: the next step or the homework.'],
-  ['0:10', 'End and keep the recap', 'Menu → <b>End room</b>, then <b>Copy recap</b> for your notes.'],
+  ['0:10', 'End and keep the recap', 'Menu → <b>End room</b>. Every phone and the projector switch to the recap; copy or download it.'],
 ];
 function hostGuide(inline: boolean) {
   return `<div class="guide${inline ? ' inline' : ''}">
     ${inline ? '<span class="tag q">You host this room</span>' : ''}
     <h3>Run a 10-minute session</h3>
-    <ol>${GUIDE_STEPS.map(([t, h, d]) => `<li><span class="t">${t}</span><div><b>${h}</b><p>${d}</p></div></li>`).join('')}</ol>
     ${inline ? `<div class="row"><button class="btn accent" data-act="screen">Projector view</button><button class="btn ghost" data-act="share">Show QR</button></div>` : ''}
-    <p class="muted small">Tap ••• on any post to hide it or remove the person. Only nicknames are shared. Rooms close after 24 hours. <a href="./guide.html" target="_blank" rel="noopener">One-page guide for teachers</a></p>
+    <ol>${GUIDE_STEPS.map(([t, h, d]) => `<li><span class="t">${t}</span><div><b>${h}</b><p>${d}</p></div></li>`).join('')}</ol>
+    <p class="muted small">Tap ••• on any post to hide it or remove the person. Guests can privately tap “I’m lost”; you see the count, never names. <a href="./guide.html" target="_blank" rel="noopener">One-page guide for teachers</a></p>
   </div>`;
 }
 
@@ -587,13 +768,14 @@ function showShare(code: string) {
 
 function showMenu() {
   const host = isHost(), closed = room!.state.closed;
-  sheet(`<h2>${txt(room!.info.title)}</h2><p class="muted">Room ${esc(room!.info.code)} · ${room!.state.people.size} people · ${room!.state.feed.filter(m => m.type !== 'join').length} messages</p>
+  sheet(`<h2>${txt(room!.info.title)}</h2><p class="muted">Room ${esc(room!.info.code)} · ${plural(peopleCount(), 'person', 'people')}</p>
     <div class="menu-list">
       <button data-m="share">Show QR and code</button>
       ${host ? '<button data-m="guide">How to run a 10-minute session</button>' : ''}
       <button data-m="screen">Open projector view</button>
       ${host && !closed ? '<button data-m="pin">Pin an announcement</button><button data-m="poll">Start a poll</button>' : ''}
-      ${host ? '<button data-m="recap">Copy recap (questions and poll results)</button>' : ''}
+      ${host || closed ? '<button data-m="recap">Copy recap (questions and poll results)</button>' : ''}
+      <button data-m="big">${document.documentElement.classList.contains('big') ? 'Normal text size' : 'Larger text'}</button>
       ${trDown() ? '' : `<button data-m="lang">Translate messages${lang ? ` (${esc(LANGS.find(l => l[0] === lang)?.[1] ?? lang)})` : ''}</button>`}
       <button data-m="name">Change my nickname</button>
       ${host && !closed ? '<button data-m="end" class="danger">End room for everyone</button>' : ''}
@@ -608,12 +790,10 @@ function showMenu() {
         if (m === 'pin') showPin();
         if (m === 'poll') showNewPoll();
         if (m === 'recap') copyRecap();
-        if (m === 'name') { myName = ''; await askName(); toast(`You're now ${myName}`); }
+        if (m === 'name') { await askName(); renderComposer(true); toast(`You're now ${myName}`); }
+        if (m === 'big') { const on = document.documentElement.classList.toggle('big'); store.set('roomcode:big', on ? '1' : ''); }
         if (m === 'lang') showLanguages();
-        if (m === 'end' && confirm('End this room? Nobody will be able to post after this.')) {
-          await sendAndApply('close', {}).catch(err => toast(err.message)); renderComposer(true);
-          backend.moderate(room!.info.code, 'close').catch(() => { /* the room view already ignores later posts */ });
-        }
+        if (m === 'end') await endRoom();
       });
     });
 }
@@ -654,9 +834,17 @@ function showNewPoll() {
         if (!question || options.length < 2) { $('#perr', el)!.textContent = 'Add a question and at least 2 options.'; return; }
         close();
         await sendAndApply('poll', { question, options }).catch(err => toast(err.message));
-        room!.tab = 'poll'; renderTabs(); renderPane(true);
+        room!.tab = 'poll'; renderTabs(); renderPane(true); renderComposer(false);
       };
     });
+}
+
+function downloadRecap() {
+  const text = clean(recap(room!.info.title, room!.info.code, room!.state));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
+  a.download = `${room!.info.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'roomcode'}-recap.md`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 async function copyRecap() {
@@ -669,26 +857,45 @@ async function copyRecap() {
 function renderScreen() {
   if (!room) return;
   const s = room.state, url = joinUrl(room.info.code);
-  const people = Math.max(s.people.size, room.info.memberCount ?? 0);
-  const qs = rankedQuestions(s).slice(0, 5);
+  const people = peopleCount();
+  const ranked = rankedQuestions(s).filter(q => !q.answered);
+  const lead = ranked[0], next = ranked.slice(1, 4);
   const poll = latestOpenPoll(s) ?? [...s.polls.values()].sort((a, b) => b.sentTime - a.sentTime)[0];
-  let pollHtml = '';
-  if (poll) {
-    const { counts, total } = pollTally(poll);
-    pollHtml = `<div class="spoll"><h2>${txt(poll.question)} <span class="muted">· ${total} ${total === 1 ? 'vote' : 'votes'}${poll.closed ? ', closed' : ''}</span></h2>
-      ${poll.options.map((o, i) => { const pct = total ? Math.round(counts[i] * 100 / total) : 0;
-        return `<div class="sopt"><div class="fill" style="width:${pct}%"></div><span><span>${txt(o)}</span><span>${pct}%</span></span></div>`; }).join('')}</div>`;
+  const pollHtml = (p: Poll | undefined, final = false) => {
+    if (!p) return '';
+    const { counts, total } = pollTally(p);
+    return `<div class="spoll"><h2><span class="lbl">${final || p.closed ? 'Final result' : p.round1 ? 'Second take' : 'Live poll'}</span>${txt(p.question)} <span class="muted">· ${plural(total, 'vote')}</span></h2>
+      ${p.options.map((o, i) => { const pct = total ? Math.round(counts[i] * 100 / total) : 0;
+        return `<div class="sopt"><div class="fill" style="width:${pct}%"></div><span><span>${txt(o)}</span><span>${pct}%</span></span></div>`; }).join('')}
+      ${p.round1 ? `<div class="smoved"><b>${changedMinds(p)}</b> of ${p.round1.size} changed their mind after talking it over</div>` : ''}</div>`;
+  };
+  const back = `<a class="sback" href="#/r/${esc(room.info.code)}">back to room</a>`;
+  if (s.closed) {
+    // Closing slide: what the room did, and how to run the next one.
+    const r = summarize(s), home = `${location.origin}${location.pathname}`;
+    app.innerHTML = `<div class="screen ended">
+      <section>
+        <div class="lbl">That's a wrap · ${txt(room.info.title)}</div>
+        <h1 class="lead">Thank you for ${r.asked ? plural(r.asked, 'question') : 'joining'}.</h1>
+        <div class="sstats">${([['people', r.people], ['answered', r.answered], ['votes', r.votes + r.pollVotes]] as [string, number][]).map(([k, v]) => `<div><b>${v}</b>${k}</div>`).join('')}</div>
+        ${r.groups.length ? `<div class="lbl">Most wanted</div>` + r.groups.slice(0, 3).map(g => `<div class="sq${g.lead.answered ? ' done' : ''}"><span class="n">▲ ${g.votes}</span><span>${txt(g.lead.text)}</span></div>`).join('') : ''}
+        ${pollHtml(r.polls[r.polls.length - 1]?.poll, true)}
+      </section>
+      <aside class="join own">${qrSvg(home)}<div class="lbl">Run your own room in 10 seconds</div><div class="big small">${esc(location.host)}</div>${back}</aside></div>`;
+    return;
   }
   app.innerHTML = `<div class="screen">
-    <aside class="join">${qrSvg(url)}<div class="lbl">Scan, or go to ${esc(location.host)} and enter</div><div class="big">${esc(room.info.code)}</div></aside>
     <section>
-      <h1>${txt(room.info.title)}</h1>
-      <div class="sub">${people} ${people === 1 ? 'person' : 'people'} in the room · ${s.closed ? 'ended' : 'live'} · <a href="#/r/${esc(room.info.code)}" style="color:inherit">back to room</a></div>
+      <div class="shead"><b>${txt(room.info.title)}</b><span>${plural(people, 'person', 'people')} in the room</span></div>
       ${s.pin ? `<div class="spin">${txt(s.pin)}</div>` : ''}
-      ${qs.length ? qs.map(q => `<div class="sq${q.answered ? ' answered' : ''}"><span class="n">▲ ${q.voters.size}</span><span>${txt(q.text)}</span></div>`).join('')
-        : '<div class="sq"><span class="n">?</span><span>Questions will appear here, ranked by votes.</span></div>'}
-      ${pollHtml}
-    </section></div>`;
+      ${lead ? `<div class="lbl${s.focus === lead.id ? ' now' : ''}">${s.focus === lead.id ? 'Answering now' : 'Top question'}</div>
+        <h1 class="lead${lead.text.length > 110 ? ' long' : ''}">${txt(lead.text)}</h1>
+        <div class="lmeta">▲ ${plural(lead.voters.size, 'vote')} · ${lead.anonymous ? 'Anonymous' : txt(lead.authorName)}</div>`
+        : `<h1 class="lead dim">Scan the code and ask the first question.</h1>`}
+      ${next.length ? `<div class="lbl">Up next</div>` + next.map(q => `<div class="sq"><span class="n">▲ ${q.voters.size}</span><span>${txt(q.text)}</span></div>`).join('') : ''}
+      ${pollHtml(poll)}
+    </section>
+    <aside class="join">${qrSvg(url)}<div class="lbl">Scan, or go to ${esc(location.host)} and enter</div><div class="big">${esc(room.info.code)}</div>${back}</aside></div>`;
 }
 
 // ---------- idle handling: free the connection when the tab is hidden ----------
