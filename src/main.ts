@@ -79,7 +79,7 @@ function qrSvg(text: string) {
 }
 function toast(text: string) {
   document.querySelectorAll('.toast').forEach(t => t.remove());
-  const t = document.createElement('div'); t.className = 'toast'; t.textContent = text; document.body.append(t);
+  const t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = text; document.body.append(t);
   setTimeout(() => t.remove(), 2200);
 }
 const ago = (t: number) => {
@@ -571,7 +571,7 @@ function renderComposer(full: boolean) {
     <div id="dupes"></div>
     <div class="who-row"><span>Posting as <button class="link-btn" data-act="rename">${txt(myName)}</button></span>
       ${q ? `<label class="anon"><input type="checkbox" id="anon" ${room.anon ? 'checked' : ''}/> Hide my name</label>` : ''}
-      ${!isHost() ? `<button class="lost-btn" data-act="imlost" aria-pressed="${lost}" title="Only the host sees how many people tapped this. No names.">${ICON.hand}${lost ? 'You said: lost' : 'I’m lost'}</button>` : ''}</div>
+      ${!isHost() ? `<button class="lost-btn" data-act="imlost" aria-pressed="${lost}" aria-label="I'm lost. Only the host sees a count, no names." title="Only the host sees how many people tapped this. No names.">${ICON.hand}${lost ? 'You said: lost' : 'I’m lost'}</button>` : ''}</div>
     <form class="compose-row" id="cf">
       <textarea id="box" rows="1" maxlength="${q ? LIMITS.question : LIMITS.chat}" placeholder="${q ? 'Ask the room a question…' : 'Message the room…'}" aria-label="${q ? 'Your question' : 'Message'}"></textarea>
       ${Speech ? `<button class="mic" id="micBtn" type="button" aria-pressed="false" aria-label="Speak instead of typing">${ICON.mic}</button>` : ''}
