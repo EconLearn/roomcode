@@ -139,6 +139,7 @@ function renderHome(prefill = '', error = '') {
   room = null;
   document.title = 'Roomcode';
   app.innerHTML = `
+  <div class="home-wrap">
   <main class="home">
     <div class="logo"><span class="logo-mark"><i></i><i></i><i></i><i></i></span>Roomcode</div>
     <h1>Hear from <em>the whole room</em>, not just the loudest voice.</h1>
@@ -157,7 +158,17 @@ function renderHome(prefill = '', error = '') {
       <li><b>3</b><span><strong>Everyone gets a voice.</strong> The best questions get voted to the top, polls show what the room thinks, and one quiet tap tells you who is lost.</span></li>
     </ol>
     <p class="foot"><a href="#/r/${FEEDBACK_CODE}">Ideas or problems? Tell us in room ${FEEDBACK_CODE}</a><br/>Built on the Nexconn Chat SDK. <span class="mode-pill">${APP_KEY && !forceMock ? 'Live' : 'Offline demo: rooms are shared between tabs of this browser'}</span></p>
-  </main>`;
+  </main>
+  <aside class="home-art" aria-hidden="true">
+    <div class="art-card"><div class="now">Answering now</div><b>Why do cells need mitochondria if they already have a nucleus?</b><small>▲ 14 · Anonymous</small></div>
+    <div class="art-card"><span class="tag q">Second take</span><b>Where is most ATP made?</b>
+      <div class="art-bar"><i style="width:82%"></i><span>In the mitochondria</span><span><s>54%</s> 82%</span></div>
+      <div class="art-bar"><i style="width:18%"></i><span>In the nucleus</span><span><s>46%</s> 18%</span></div>
+      <div class="moved"><b>8</b> of 28 changed their mind</div></div>
+    <div class="art-card lost-meter on"><div class="lm-row"><span>${ICON.hand}<b>4 people lost</b></span></div><div class="lm-bar"><i style="width:15%"></i></div><p class="muted small">One private tap. The host sees the count, never names.</p></div>
+    <p class="art-note">What a room looks like (example)</p>
+  </aside>
+  </div>`;
   const code = $<HTMLInputElement>('#code')!;
   code.oninput = () => { code.value = normalizeCode(code.value); };
   $<HTMLFormElement>('#jf')!.onsubmit = e => {
@@ -340,12 +351,11 @@ function renderLive(stickToBottom: boolean, fullComposer = false) {
 
 function renderTop() {
   const el = $('#top'); if (!el || !room) return;
-  const n = peopleCount(), lost = room.state.lost.size;
+  const n = peopleCount();
   el.innerHTML = `
     <a class="icon-btn" href="#/" aria-label="Leave room">${ICON.back}</a>
     <div class="title"><b>${txt(room.info.title)}</b>
-      <small><span class="dot ${status}"></span>${status === 'connected' ? plural(n, 'person', 'people') : status === 'connecting' ? 'Connecting…' : 'Offline'}${isHost() ? ' · you host' : ''}</small></div>
-    ${isHost() && lost && !room.state.closed ? `<button class="lost-chip" data-act="lost" aria-label="${lost} lost. Tap for details">${ICON.hand}${lost} lost</button>` : ''}
+      <small><span class="dot ${room.state.closed ? 'offline' : status}"></span><span>${room.state.closed ? `Ended · ${plural(n, 'person', 'people')}` : status === 'connected' ? plural(n, 'person', 'people') : status === 'connecting' ? 'Connecting…' : 'Offline'}${isHost() ? ' · you host' : ''}</span></small></div>
     <button class="code-chip" data-act="share" aria-label="Show join code">${esc(room.info.code)}</button>
     <button class="icon-btn" data-act="menu" aria-label="Room menu">${ICON.more}</button>`;
 }
@@ -362,7 +372,7 @@ function renderDash() {
         <span class="tag q">You host this room</span>
         <div class="dash-qr">${qrSvg(joinUrl(room.info.code))}</div>
         <div class="dash-code">${esc(room.info.code)}</div>
-        <div class="dash-url">${esc(location.host)}</div>
+    
         <div class="row"><button class="btn ghost small" data-act="copylink">Copy link</button><button class="btn small" data-act="screen">Projector view</button></div>
       </div>
       <div class="dash-card"><dl class="stats" id="dstats"></dl><div id="dlost"></div></div>
@@ -373,7 +383,7 @@ function renderDash() {
       </div>
       <p class="muted small dash-tip">Tap ••• on any post to hide it or remove the person. <a href="./guide.html" target="_blank" rel="noopener">One-page guide</a></p>`;
   }
-  $('#dstats', el)!.innerHTML = ([['People', n], ['Open', r.open], ['Answered', r.answered], ['Votes', r.votes + r.pollVotes]] as [string, number][])
+  $('#dstats', el)!.innerHTML = ([['People', n], ['Open', r.open], ['Answered', r.answered], ['Upvotes', r.votes]] as [string, number][])
     .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
   $('#dlost', el)!.innerHTML = closed ? '' : lostMeter(lost, n);
 }
@@ -389,7 +399,10 @@ function lostMeter(lost: number, people: number) {
 
 function renderPin() {
   const el = $('#pin'); if (!el || !room) return;
-  el.innerHTML = room.state.pin ? `<div class="pin">${ICON.pin}<span>${txt(room.state.pin)}</span></div>` : '';
+  const lost = room.state.lost.size;
+  // On a phone the host sees the "lost" count as a strip under the header (the laptop dashboard has its own meter).
+  el.innerHTML = (isHost() && lost && !room.state.closed ? `<button class="lost-strip" data-act="lost">${ICON.hand}<b>${plural(lost, 'person', 'people')} lost</b><span>No names. Tap for details</span></button>` : '') +
+    (room.state.pin ? `<div class="pin">${ICON.pin}<span>${txt(room.state.pin)}</span></div>` : '');
 }
 
 function renderTabs() {
@@ -410,9 +423,10 @@ function questionCard(q: Question, rank = -1) {
   const name = q.anonymous ? 'Anonymous' : txt(q.authorName);
   const focus = s.focus === q.id;
   const hostCtl = isHost() && !s.closed ? `<div class="qctl">
-      ${q.answered ? '' : `<button class="chip-btn${focus ? ' on' : ''}" data-focus="${esc(focus ? '' : q.id)}">${focus ? 'Stop answering' : 'Answer now'}</button>`}
-      <button class="chip-btn" data-answer="${esc(q.id)}" data-val="${!q.answered}">${q.answered ? 'Reopen' : focus ? 'Done, next' : 'Mark answered'}</button>
-      ${q.answered ? '' : `<button class="chip-btn" data-tovote="${esc(q.id)}" title="Turn this question into a Yes / No / Not sure poll">Put to a vote</button>`}${modBtn(q.id, q.authorId)}</div>` : '';
+      ${q.answered ? `<button class="chip-btn" data-answer="${esc(q.id)}" data-val="false">Reopen</button>`
+        : focus ? `<button class="chip-btn primary" data-answer="${esc(q.id)}" data-val="true">Done, next</button><button class="chip-btn" data-focus="">Stop</button>`
+        : `<button class="chip-btn dark" data-focus="${esc(q.id)}">Answer now</button><button class="chip-btn" data-answer="${esc(q.id)}" data-val="true">Answered</button>`}
+      ${q.answered ? '' : `<button class="chip-btn" data-tovote="${esc(q.id)}" title="Turn this question into a Yes / No / Not sure poll">Poll it</button>`}${modBtn(q.id, q.authorId)}</div>` : '';
   return `<article class="qcard${q.answered ? ' answered' : ''}${focus ? ' focus' : rank === 0 && !q.answered && q.voters.size > 1 ? ' top1' : ''}">
     <button class="vote" data-vote="${esc(q.id)}" aria-pressed="${mine}" aria-label="Upvote, ${q.voters.size} votes" ${s.closed ? 'disabled' : ''}>${ICON.up}${q.voters.size}</button>
     <div class="qbody">${focus ? '<div class="now">Answering now</div>' : ''}<div class="qtext">${txt(q.text)}</div>${trLine(q.id)}
@@ -420,19 +434,28 @@ function questionCard(q: Question, rank = -1) {
   </article>`;
 }
 
+// Each option's share in the first round of a second-take poll.
+function pollWas(p: Poll): number[] {
+  const c = p.options.map(() => 0);
+  for (const i of p.round1!.values()) c[i]++;
+  const t = p.round1!.size;
+  return c.map(n => (t ? Math.round(n * 100 / t) : 0));
+}
+
 function pollCard(p: Poll) {
   const { counts, total } = pollTally(p);
   const mine = p.votes.get(ME);
   const over = p.closed || room!.state.closed;
   const showResults = mine !== undefined || over || isHost();
+  const was = p.round1 ? pollWas(p) : null;
   const moved = changedMinds(p), second = !!p.round1;
   const first = p.round1?.get(ME);
   return `<article class="poll"><span class="tag ${over ? '' : 'q'}">${over ? 'Final result' : second ? 'Second take' : 'Live poll'}</span><h3>${txt(p.question)}</h3>${trLine(p.id)}
-    ${second && !over && first !== undefined && !isHost() ? `<p class="retake">You said <b>${txt(p.options[first])}</b>. Still think so? Tap to change.</p>` : ''}
+    ${second && !over && first !== undefined && !isHost() ? `<p class="retake">${mine !== undefined && mine !== first ? `First you said <b>${txt(p.options[first])}</b>. Now <b>${txt(p.options[mine])}</b>.` : `You said <b>${txt(p.options[first])}</b>. Still think so? Tap another to change.`}</p>` : ''}
     ${p.options.map((o, i) => {
       const pct = total ? Math.round(counts[i] * 100 / total) : 0;
       return `<button class="opt${mine === i ? ' mine' : ''}" data-poll="${esc(p.id)}" data-opt="${i}" ${over ? 'disabled' : ''}>
-        <div class="fill" style="width:${showResults ? pct : 0}%"></div><span><span>${txt(o)}</span>${showResults ? `<span>${pct}%</span>` : ''}</span></button>`;
+        <div class="fill" style="width:${showResults ? pct : 0}%"></div>${was && showResults ? `<i class="was" style="left:${was[i]}%" title="First answer: ${was[i]}%"></i>` : ''}<span><span>${txt(o)}</span>${showResults ? `<span>${was && was[i] !== pct ? `<s>${was[i]}%</s> ` : ''}${pct}%</span>` : ''}</span></button>`;
     }).join('')}
     <div class="foot-note"><span>${plural(total, 'vote')}${over ? '' : mine === undefined ? ' · tap to vote' : ' · tap another to change'}</span>
     ${isHost() && !over ? `<span class="pctl">${!second && total ? `<button class="link-btn" data-retake="${esc(p.id)}" title="After you have discussed it, let everyone answer again and see who moved">Ask again</button>` : ''}<button class="link-btn" data-closepoll="${esc(p.id)}">Close poll</button></span>` : ''}</div>
@@ -442,7 +465,7 @@ function pollCard(p: Poll) {
 // The recap everyone lands on when the room ends: the numbers, what the room most wanted, poll results.
 function recapView() {
   const s = room!.state, r = summarize(s);
-  const stats = ([['People', r.people], ['Questions', r.asked], ['Answered', r.answered], ['Votes', r.votes + r.pollVotes]] as [string, number][])
+  const stats = ([['People', r.people], ['Questions', r.asked], ['Answered', r.answered], ['Upvotes', r.votes]] as [string, number][])
     .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
   const groups = r.groups.slice(0, 8).map(g => `<li><span class="rv">${g.votes}</span><div><b>${txt(g.lead.text)}</b>
       <small>${g.lead.answered ? '<span class="tag ok">Answered</span>' : '<span class="tag">Still open</span>'}${g.others.length ? ` asked ${g.others.length + 1} ways` : ''}</small>
@@ -641,12 +664,12 @@ app.addEventListener('click', async e => {
 
 // The host's playbook. Shown in an empty room and from the menu.
 const GUIDE_STEPS: [string, string, string][] = [
-  ['0:00', 'Put the code on the board', 'Tap <b>Projector view</b> (or the code chip) and show it on the screen.'],
-  ['0:01', 'Say one line', '“Scan this and ask anything. You can hide your name. If I lose you, tap I’m lost.”'],
-  ['0:02', 'Let questions come in', 'The room votes the best ones to the top. Tap <b>Answer now</b> to put one on every screen, then <b>Done, next</b>.'],
-  ['0:06', 'Run a quick poll', 'Polls tab → <b>New poll</b>, 2 to 4 answers. Results move live on the projector.'],
-  ['0:09', 'Pin the takeaway', 'Menu → <b>Pin an announcement</b>: the next step or the homework.'],
-  ['0:10', 'End and keep the recap', 'Menu → <b>End room</b>. Every phone and the projector switch to the recap; copy or download it.'],
+  ['Start', 'Put the code on the board', 'Tap <b>Projector view</b> (or the code chip) and show it on the screen.'],
+  ['1 min', 'Say one line', '“Scan this and ask anything. You can hide your name. If I lose you, tap I’m lost.”'],
+  ['2 min', 'Let questions come in', 'The room votes the best ones to the top. Tap <b>Answer now</b> to put one on every screen, then <b>Done, next</b>.'],
+  ['6 min', 'Run a quick poll', '<b>Start a poll</b> with 2 to 6 answers. After you discuss it, <b>Ask again</b> and see who changed their mind.'],
+  ['9 min', 'Pin the takeaway', 'Menu → <b>Pin an announcement</b>: the next step or the homework.'],
+  ['10 min', 'End and keep the recap', 'Menu → <b>End room</b>. Every phone and the projector switch to the recap; copy or download it.'],
 ];
 function hostGuide(inline: boolean) {
   return `<div class="guide${inline ? ' inline' : ''}">
@@ -755,8 +778,8 @@ function showLanguages() {
 
 function showShare(code: string) {
   const url = joinUrl(code);
-  sheet(`<h2>Invite the room</h2><p class="muted">Point a phone camera at the code, or type the code at ${esc(location.host)}.</p>
-    <div class="share-qr">${qrSvg(url)}</div><div class="share-code">${esc(code)}</div><div class="share-url">${esc(url)}</div>
+  sheet(`<h2>Invite the room</h2><p class="muted">Point a phone camera at the code. No app, no account.</p>
+    <div class="share-qr">${qrSvg(url)}</div><div class="share-code">${esc(code)}</div><div class="share-url">or enter the code at ${esc(location.host)}</div>
     <div class="row"><button class="btn ghost" id="copyLink">Copy link</button><a class="btn" href="#/r/${esc(code)}/screen">Projector view</a></div>`,
     (el, close) => {
       $('#copyLink', el)!.onclick = async () => {
@@ -864,24 +887,25 @@ function renderScreen() {
   const pollHtml = (p: Poll | undefined, final = false) => {
     if (!p) return '';
     const { counts, total } = pollTally(p);
+    const was = p.round1 ? pollWas(p) : null;
     return `<div class="spoll"><h2><span class="lbl">${final || p.closed ? 'Final result' : p.round1 ? 'Second take' : 'Live poll'}</span>${txt(p.question)} <span class="muted">· ${plural(total, 'vote')}</span></h2>
       ${p.options.map((o, i) => { const pct = total ? Math.round(counts[i] * 100 / total) : 0;
-        return `<div class="sopt"><div class="fill" style="width:${pct}%"></div><span><span>${txt(o)}</span><span>${pct}%</span></span></div>`; }).join('')}
+        return `<div class="sopt"><div class="fill" style="width:${pct}%"></div>${was ? `<i class="was" style="left:${was[i]}%"></i>` : ''}<span><span>${txt(o)}</span><span>${was && was[i] !== pct ? `<s>${was[i]}%</s> ` : ''}${pct}%</span></span></div>`; }).join('')}
       ${p.round1 ? `<div class="smoved"><b>${changedMinds(p)}</b> of ${p.round1.size} changed their mind after talking it over</div>` : ''}</div>`;
   };
-  const back = `<a class="sback" href="#/r/${esc(room.info.code)}">back to room</a>`;
+  const back = `<a class="sback" href="#/r/${esc(room.info.code)}" aria-label="Back to the room" title="Back to the room (Esc)">×</a>`;
   if (s.closed) {
     // Closing slide: what the room did, and how to run the next one.
     const r = summarize(s), home = `${location.origin}${location.pathname}`;
     app.innerHTML = `<div class="screen ended">
       <section>
         <div class="lbl">That's a wrap · ${txt(room.info.title)}</div>
-        <h1 class="lead">Thank you for ${r.asked ? plural(r.asked, 'question') : 'joining'}.</h1>
-        <div class="sstats">${([['people', r.people], ['answered', r.answered], ['votes', r.votes + r.pollVotes]] as [string, number][]).map(([k, v]) => `<div><b>${v}</b>${k}</div>`).join('')}</div>
+        <h1 class="lead">Thank you for ${r.asked > 1 ? `your ${r.asked} questions` : 'joining'}.</h1>
+        <div class="sstats">${([['people', r.people], ['questions', r.asked], ['upvotes', r.votes], ...(r.pollVotes ? [['poll votes', r.pollVotes]] : [])] as [string, number][]).map(([k, v]) => `<div><b>${v}</b>${k}</div>`).join('')}</div>
         ${r.groups.length ? `<div class="lbl">Most wanted</div>` + r.groups.slice(0, 3).map(g => `<div class="sq${g.lead.answered ? ' done' : ''}"><span class="n">▲ ${g.votes}</span><span>${txt(g.lead.text)}</span></div>`).join('') : ''}
         ${pollHtml(r.polls[r.polls.length - 1]?.poll, true)}
       </section>
-      <aside class="join own">${qrSvg(home)}<div class="lbl">Run your own room in 10 seconds</div><div class="big small">${esc(location.host)}</div>${back}</aside></div>`;
+      <aside class="join own">${qrSvg(home)}<div class="lbl"><b>Run your own room</b><br/>Scan. It takes 10 seconds.</div></aside>${back}</div>`;
     return;
   }
   app.innerHTML = `<div class="screen">
@@ -895,7 +919,7 @@ function renderScreen() {
       ${next.length ? `<div class="lbl">Up next</div>` + next.map(q => `<div class="sq"><span class="n">▲ ${q.voters.size}</span><span>${txt(q.text)}</span></div>`).join('') : ''}
       ${pollHtml(poll)}
     </section>
-    <aside class="join">${qrSvg(url)}<div class="lbl">Scan, or go to ${esc(location.host)} and enter</div><div class="big">${esc(room.info.code)}</div>${back}</aside></div>`;
+    <aside class="join">${qrSvg(url)}<div class="lbl">Scan to join. No app, no account.</div><div class="big">${esc(room.info.code)}</div><div class="host">${esc(location.host)}</div></aside>${back}</div>`;
 }
 
 // ---------- idle handling: free the connection when the tab is hidden ----------
@@ -928,5 +952,7 @@ function route() {
   void openRoom(code, screen);
 }
 window.addEventListener('hashchange', route);
+// On the projector, Esc goes back to the room.
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && room && $('.screen') && !$('.scrim')) location.hash = `#/r/${room.info.code}`; });
 setInterval(() => { if (room && $('.qmeta')) renderPane(false); }, 60_000); // refresh "x min ago"
 route();
